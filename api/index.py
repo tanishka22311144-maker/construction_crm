@@ -31,6 +31,38 @@ def hash_sender(sender: str) -> str:
     return hashlib.sha256(sender.encode("utf-8")).hexdigest()
 
 
+def send_whatsapp_message(to_number: str, body: str):
+    access_token = os.environ.get("META_ACCESS_TOKEN")
+    phone_number_id = os.environ.get("META_PHONE_NUMBER_ID")
+    if not access_token or not phone_number_id:
+        return {"sent": False, "reason": "missing_meta_credentials"}
+
+    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {"body": body},
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            response_body = response.read().decode("utf-8")
+            return {"sent": True, "response": response_body}
+    except Exception as exc:
+        return {"sent": False, "reason": "graph_api_error", "detail": str(exc)}
+
+
 def extract_message_from_payload(payload):
     try:
         entry = payload.get("entry", [])[0]
@@ -102,6 +134,7 @@ def app(environ, start_response):
     }
     agent_result = run_agent(agent_state)
     reply_text = agent_result.get("final_response") or "Message received."
+    send_result = send_whatsapp_message(sender, reply_text)
 
     return json_response(
         start_response,
@@ -109,6 +142,8 @@ def app(environ, start_response):
             "reply": reply_text,
             "message_id": msg_id,
             "thread_id": agent_result.get("thread_id"),
+            "whatsapp_sent": bool(send_result.get("sent")),
+            "whatsapp_status": send_result.get("reason"),
         },
     )
 
