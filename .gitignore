@@ -5,3 +5,4 @@ scaffold/
 .env
 .env.local
 .vercel/cache/
+__pycache__/
