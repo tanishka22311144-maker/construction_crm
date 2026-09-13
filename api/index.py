@@ -1,8 +1,10 @@
 import os, sys
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "project"))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-from api.index import app as _app
+from pathlib import Path
+# Add the sibling `project` directory to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent / "project"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from project.api.index import app as _app
 
 # Vercel looks for a top‑level callable named `handler`. We also expose `app`
 # for completeness and for any tooling that expects the FastAPI instance.
