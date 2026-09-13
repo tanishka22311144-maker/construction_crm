@@ -1,5 +1,25 @@
 # Implementation stages (MINT framework)
 
+> **Status: Stage 1 is complete and verified** — every box in its Verify
+> checklist has passed against a real deployment (preview URL live, Meta
+> webhook handshake green, a real WhatsApp message answered, the
+> double-reply gap confirmed present as expected). Work resumes at
+> **Stage 2**.
+>
+> One thing carries forward that is *not* business as usual: Stage 1's
+> `agent/graph.py` is a plain Python for-loop over node functions
+> (`run_agent()`), not a real LangGraph graph — that was a deliberate,
+> scoped-down shortcut for a two-node, branch-free pipeline (see the
+> Stage 1 Build note below). `PROJECT_SPEC.md` §4–§5 and
+> `.agents/rules/langgraph.md` both assume an actual
+> `langgraph.graph.StateGraph`, and Stage 2 is where that stops being
+> optional: this stage introduces the first conditional branch
+> (`check_permission`: denied vs. allowed), which the Stage 1 runner has
+> no way to express. **Stage 2's Build section below starts with
+> migrating `agent/graph.py` onto a real `StateGraph` before anything
+> else in this stage is added** — every stage from here on builds nodes
+> and edges into that graph, not into the old runner.
+
 This supersedes the Phase 1–6 build order in `PROJECT_SPEC.md` §18.
 `PROJECT_SPEC.md` is still the reference for the *end-state* design — full
 schema, all four tools, the complete graph, the approval checklist. This
@@ -10,7 +30,9 @@ only at the very end.
 Rule for every stage: don't build ahead of it. If a stage doesn't call for
 a table, a tool, or a graph node yet, it doesn't exist yet in the repo —
 resist pulling forward something that "will be needed eventually." Stage
-1 in particular is meant to be almost embarrassingly small.
+1 in particular is meant to be almost embarrassingly small. \
+**EVERYTIME YOU MAKE CHANGES WRITE IT HERE AS THE CURRENT STAGE IMPLEMENTATION
+PROGRESS AT THE VERY START OF `IMPLEMENTAION_STAGES.md`**
 
 Each stage ends with a **Verify** section. Do not start the next stage
 until every item in the current stage's Verify section actually passes
@@ -19,7 +41,7 @@ only compiles is not a completed stage.
 
 ---
 
-## Stage 1 — Basic prompt
+## Stage 1 — Basic prompt ✅ COMPLETE
 
 > Message comes in → Agent answers. Do this working, nothing else.
 
@@ -35,8 +57,15 @@ only compiles is not a completed stage.
   `receive_request` → `generate_response` (a single LLM call using
   `agent/instructions.md` as system prompt) → `send_whatsapp_response`.
   Every other node named in PROJECT_SPEC.md §5 does not exist yet.
+  **Deliberate Stage 1-only shortcut:** wire these three as a plain
+  Python function calling the node functions in sequence, not a real
+  `langgraph.graph.StateGraph` — with no branching yet, a graph object
+  buys nothing at this stage. This is scoped to Stage 1 only: flag it
+  with a `# TODO(stage-2)` comment, and see Stage 2's Build section
+  below, which replaces it with a real `StateGraph` the moment the first
+  branch (`check_permission`) exists.
 - Checkpointer: `MemorySaver`, explicitly temporary — flag this with a
-  `# TODO(stage-4)` comment, since `.github/instructions/langgraph.instructions.md`
+  `# TODO(stage-4)` comment, since `.agents/rules/langgraph.md`
   normally forbids `MemorySaver` outside local tests. It's allowed here
   only because there is no state worth persisting yet.
 - No Supabase. No tools. No permission checks. No dedup.
@@ -46,22 +75,22 @@ with no `processed_messages` table yet, a redelivered message gets a
 second reply. That's fine for Stage 1 — it's closed in Stage 4. Don't fix
 it early; it'd mean building `processed_messages` out of order.
 
-**Verify**
+**Verify** — all items below have passed against a real deployment; Stage 1 is closed.
 
-- [ ] `vercel build` succeeds locally.
-- [ ] `vercel dev` runs; `tests/smoke_test.sh` (pointed at a generic
+- [x] `vercel build` succeeds locally.
+- [x] `vercel dev` runs; `tests/smoke_test.sh` (pointed at a generic
       message, not a business query yet) gets back a non-error reply.
-- [ ] `vercel deploy` to a preview URL; confirm the deployment is live
+- [x] `vercel deploy` to a preview URL; confirm the deployment is live
       (`vercel ls` / the returned URL responds).
-- [ ] In Meta's App Dashboard, set the webhook URL to the preview URL +
+- [x] In Meta's App Dashboard, set the webhook URL to the preview URL +
       your verify token; confirm Meta's verification handshake succeeds
       (green checkmark in the dashboard, not just "no error" in your logs).
-- [ ] From a real phone on Meta's test-recipient list, send an actual
+- [x] From a real phone on Meta's test-recipient list, send an actual
       WhatsApp message. Confirm a reply arrives in the chat within a few
       seconds.
-- [ ] `vercel logs <deployment-url>` shows the request with no
+- [x] `vercel logs <deployment-url>` shows the request with no
       unhandled exceptions.
-- [ ] Send the same message twice in a row; confirm you get two replies
+- [x] Send the same message twice in a row; confirm you get two replies
       (this is the accepted gap above — verifying it's present, not
       absent, tells you Stage 4 actually fixed something real later).
 
@@ -73,6 +102,33 @@ it early; it'd mean building `processed_messages` out of order.
 
 **Build**
 
+- **Migrate `agent/graph.py` onto a real `langgraph.graph.StateGraph`
+  before adding anything else this stage.** Stage 1's `run_agent()` was
+  a plain for-loop by design (see Stage 1's note above) — that stops
+  being sufficient the moment this stage introduces its first branch:
+  `check_permission` denied → `safe_failure` vs. allowed →
+  `execute_tool` (PROJECT_SPEC.md §5). Concretely:
+  - Build the graph as `StateGraph(AgentState)` (`AgentState` from
+    `agent/state.py`, unchanged), registering each node from
+    PROJECT_SPEC.md §5 that exists as of this stage via `add_node`.
+  - Use `add_edge` for straight-line transitions and
+    `add_conditional_edges` for the `check_permission` branch — do not
+    simulate the branch with an `if` inside a single node function; it
+    must be a real edge in the compiled graph, per
+    `.agents/rules/langgraph.md`'s rule against collapsing distinct
+    failure branches into fewer nodes than the graph diagram shows.
+  - Compile with `.compile(checkpointer=MemorySaver())` — still
+    `MemorySaver` this stage (the `# TODO(stage-4)` from Stage 1 still
+    applies; only the graph construction around it changes, not the
+    checkpointer), and give every invocation a `thread_id` via
+    `config={"configurable": {"thread_id": state["thread_id"]}}`.
+  - Export the compiled graph object (e.g. `graph = builder.compile(...)`)
+    from `agent/graph.py` in place of the old `run_agent` function, and
+    update `api/index.py` to call `graph.invoke(state, config=...)`
+    instead of importing `run_agent`.
+  - `agent/nodes.py` node functions themselves don't need to change
+    shape — they still take and return state — only how they're wired
+    together changes.
 - Run migrations `20260101000100` through `20260101000600`
   (`projects` → `user_project_access`) from `supabase/migrations/`.
   `chat_sessions` gets created as part of this batch too — that's fine,
@@ -83,7 +139,7 @@ it early; it'd mean building `processed_messages` out of order.
 - `services/authorization.py`: `authorize()`, checking
   `user_project_access.can_read` only (write permissions come in Stage 5).
 - `tools/schemas.py`, `tools/read_project_data.py`: implement per
-  `.github/instructions/tools.instructions.md`.
+  `.agents/rules/tools.md`.
 - Graph nodes added: `load_instructions` (loads `agent/instructions.md`
   fresh — was hardcoded inline in Stage 1), `load_identity_and_memory`
   (identity lookup only, no chat history yet — that's Stage 4),
@@ -115,6 +171,16 @@ it early; it'd mean building `processed_messages` out of order.
       or a WhatsApp number not in `agent_users` — confirm a clear
       "not found" / "not registered" reply, not a stack trace or a
       hallucinated answer.
+- [ ] Confirm `agent/graph.py` now builds and compiles a real
+      `StateGraph` (e.g. it exposes a compiled `graph` object, and
+      `run_agent`/a manual node-dispatch loop no longer exists anywhere
+      in the diff) rather than carrying Stage 1's for-loop forward.
+- [ ] Temporarily flip your seeded `user_project_access.can_read` to
+      `false` and re-send the same project query; confirm the reply is
+      a clear denial and that this happened via the `check_permission`
+      conditional edge actually routing to a different node — not an
+      `if` statement bolted inside one node — by checking that a denied
+      run's trace only visits `safe_failure`, not `execute_tool`.
 
 ---
 
@@ -178,7 +244,7 @@ it early; it'd mean building `processed_messages` out of order.
 - Wire `load_identity_and_memory` to also load the last 6–10
   `chat_sessions` rows for this user.
 - Add the idempotency dedup check (per
-  `.github/skills/idempotency-key/SKILL.md`) at the very top of
+  `.agents/skills/idempotency-key/SKILL.md`) at the very top of
   `api/index.py`, before anything else runs — this is what finally closes
   the Stage 1 double-reply gap.
 - Log every node transition as an `agent_events` row (per
@@ -216,8 +282,8 @@ it early; it'd mean building `processed_messages` out of order.
 
 - `tools/add_project_row.py`, `create_project_field.py`,
   `create_project.py`, each following the write-tool sequence in
-  `.github/instructions/tools.instructions.md` and the envelope +
-  read-back pattern in `.github/skills/verification-envelope/SKILL.md`.
+  `.agents/rules/tools.md` and the envelope +
+  read-back pattern in `.agents/skills/verification-envelope/SKILL.md`.
 - Full write-path verification: PROJECT_SPEC.md §7 Layer 6 (post-write
   read-back) now applies.
 - Idempotency key check before every insert (per the skill), reusing the
@@ -260,7 +326,7 @@ it early; it'd mean building `processed_messages` out of order.
 
 - Run migration `20260101000800` (`pending_approvals`).
 - `services/approvals.py`, implementing the full checklist in
-  `.github/skills/whatsapp-approval-flow/SKILL.md` and PROJECT_SPEC.md
+  `.agents/skills/whatsapp-approval-flow/SKILL.md` and PROJECT_SPEC.md
   §11 — role match, project-level `can_approve_*`, unexpired
   `approval_id`, `approval_token_hash` match, payload-hash match.
 - Graph nodes: `request_approval` (interrupt + checkpoint + exit, never
