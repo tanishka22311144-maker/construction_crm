@@ -95,11 +95,11 @@ def _call_groq(api_key: str, model: str, user_message: str, system_prompt: str |
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": (system_prompt or _instructions_text())[:200]},
-            {"role": "user", "content": user_message[:200]},
+            {"role": "system", "content": (system_prompt or _instructions_text())},
+            {"role": "user", "content": user_message},
         ],
-        "temperature": 0.1,
-        "max_tokens": 64,
+        "temperature": 0.2,
+        "max_tokens": 512,
     }
 
     req = request.Request(
