@@ -1,0 +1,5 @@
+fastapi
+langgraph-checkpoint
+typing_extensions
+pydantic
+psycopg2-binary
