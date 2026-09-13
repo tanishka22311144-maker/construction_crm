@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from agent.graph import graph
 
 app = FastAPI()
+handler = app  # Vercel entrypoint alias
 
 
 @app.get("/api/index")
