@@ -186,3 +186,4 @@ def send_whatsapp_response(state: dict) -> dict:
     state.setdefault("final_response", "Hello from the construction CRM bot.")
     _debug_log("send_whatsapp_response", thread_id=state.get("thread_id"), final_response_preview=state["final_response"][:180])
     return state
+

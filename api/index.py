@@ -90,21 +90,24 @@ def send_whatsapp_message(to_number: str, body: str):
 
 def extract_message_from_payload(payload):
     try:
-        entry = payload.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
-        if not messages:
-            return None, None, None
-        msg = messages[0]
-        sender = msg.get("from")
-        msg_id = msg.get("id") or payload.get("object")
-        text = None
-        if isinstance(msg.get("text"), dict):
-            text = msg.get("text", {}).get("body")
-        else:
-            text = msg.get("text")
-        return msg_id, sender, text
+        entries = payload.get("entry", [])
+        for entry in entries:
+            changes = entry.get("changes", [])
+            for change in changes:
+                value = change.get("value", {})
+                messages = value.get("messages") or []
+                if not messages:
+                    continue
+                msg = messages[0]
+                sender = msg.get("from")
+                msg_id = msg.get("id") or payload.get("object")
+                text = msg.get("text")
+                if isinstance(text, dict):
+                    text = text.get("body")
+                if sender is None or text is None:
+                    continue
+                return msg_id, sender, str(text).strip()
+        return None, None, None
     except Exception:
         return None, None, None
 
@@ -158,8 +161,16 @@ def app(environ, start_response):
     msg_id, sender, text = extract_message_from_payload(payload)
     log_step("webhook_message_extracted", message_id=msg_id, sender=sender, body_preview=(text[:160] if text else ""))
     if sender is None or text is None:
+<<<<<<< HEAD
         log_step("webhook_no_message", payload_keys=list(payload.keys())[:10])
         return json_response(start_response, {"error": "no message found in payload"}, status="400 Bad Request")
+=======
+        return json_response(
+            start_response,
+            {"status": "ignored", "reason": "no_message_found_in_payload"},
+            status="200 OK",
+        )
+>>>>>>> agents/whatsapp-reply-issue
 
     agent_state = {
         "message_id": msg_id,
@@ -195,3 +206,4 @@ if __name__ == "__main__":
     print(f"Starting local test server on :{port} (path /api/index)")
     with make_server("0.0.0.0", port, app) as server:
         server.serve_forever()
+
