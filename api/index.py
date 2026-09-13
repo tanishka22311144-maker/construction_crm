@@ -47,8 +47,8 @@ def hash_sender(sender: str) -> str:
 
 
 def send_whatsapp_message(to_number: str, body: str):
-    access_token = os.environ.get("META_ACCESS_TOKEN")
-    phone_number_id = os.environ.get("META_PHONE_NUMBER_ID")
+    access_token = (os.environ.get("META_ACCESS_TOKEN") or "").strip().strip('"').strip("'")
+    phone_number_id = (os.environ.get("META_PHONE_NUMBER_ID") or "").strip().strip('"').strip("'")
     log_step(
         "meta_send_start",
         to_number=to_number,
@@ -74,6 +74,7 @@ def send_whatsapp_message(to_number: str, body: str):
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
+            "User-Agent": "ConstructionCRM/1.0",
         },
         method="POST",
     )
@@ -83,6 +84,10 @@ def send_whatsapp_message(to_number: str, body: str):
             response_body = response.read().decode("utf-8")
             log_step("meta_send_success", status=getattr(response, "status", None), response_preview=response_body[:200])
             return {"sent": True, "response": response_body}
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+        log_step("meta_send_failure", error=str(exc)[:200], detail=err_body[:300])
+        return {"sent": False, "reason": f"graph_api_http_error_{exc.code}", "detail": err_body}
     except Exception as exc:
         log_step("meta_send_failure", error=str(exc)[:200])
         return {"sent": False, "reason": "graph_api_error", "detail": str(exc)}

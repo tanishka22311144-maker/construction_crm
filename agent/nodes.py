@@ -42,15 +42,16 @@ def _instructions_text() -> str:
 
 
 def _get_llm_reply(user_message: str, system_prompt: str | None = None) -> str:
-    api_key = os.getenv("GROQ_API_KEY")
-    configured_model = os.getenv("GROQ_MODEL")
+    api_key = (os.getenv("GROQ_API_KEY") or "").strip().strip('"').strip("'")
+    configured_model = (os.getenv("GROQ_MODEL") or "").strip().strip('"').strip("'")
     candidate_models = []
     if configured_model:
         candidate_models.append(configured_model)
     candidate_models.extend([
         "openai/gpt-oss-20b",
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "groq/compound-mini",
     ])
 
     _debug_log(
@@ -107,6 +108,7 @@ def _call_groq(api_key: str, model: str, user_message: str, system_prompt: str |
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "ConstructionCRM/1.0",
         },
         method="POST",
     )
