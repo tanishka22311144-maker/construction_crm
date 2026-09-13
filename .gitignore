@@ -4,3 +4,4 @@
 scaffold/
 .env
 .env.local
+.vercel/cache/
