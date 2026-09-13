@@ -162,3 +162,4 @@ if __name__ == "__main__":
     print(f"Starting local test server on :{port} (path /api/index)")
     with make_server("0.0.0.0", port, app) as server:
         server.serve_forever()
+

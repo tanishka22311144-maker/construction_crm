@@ -134,3 +134,4 @@ def generate_response(state: dict) -> dict:
 def send_whatsapp_response(state: dict) -> dict:
     state.setdefault("final_response", "Hello from the construction CRM bot.")
     return state
+
