@@ -1,4 +1,10 @@
-from project.api.index import app as handler
+from project.api.index import app as _app
+
+# Vercel looks for a top‑level callable named `handler`. We also expose `app`
+# for completeness and for any tooling that expects the FastAPI instance.
+handler = _app
+app = _app
+
 
 # Vercel expects a callable named `handler`. This thin wrapper re‑exports the
 # FastAPI application defined in `project/api/index.py`, which contains the
