@@ -117,7 +117,7 @@ def app(environ, start_response):
     path = environ.get("PATH_INFO", "")
     log_step("webhook_request", method=method, path=path, query_string=environ.get("QUERY_STRING", "")[:200])
 
-    if path != "/api/index":
+    if path not in {"/api/index", "/api/index.py", "/api", "/api/", "/", ""}:
         log_step("webhook_route_mismatch", expected="/api/index", actual=path)
         return json_response(start_response, {"error": "not found"}, status="404 Not Found")
 
@@ -161,16 +161,12 @@ def app(environ, start_response):
     msg_id, sender, text = extract_message_from_payload(payload)
     log_step("webhook_message_extracted", message_id=msg_id, sender=sender, body_preview=(text[:160] if text else ""))
     if sender is None or text is None:
-<<<<<<< HEAD
         log_step("webhook_no_message", payload_keys=list(payload.keys())[:10])
-        return json_response(start_response, {"error": "no message found in payload"}, status="400 Bad Request")
-=======
         return json_response(
             start_response,
             {"status": "ignored", "reason": "no_message_found_in_payload"},
             status="200 OK",
         )
->>>>>>> agents/whatsapp-reply-issue
 
     agent_state = {
         "message_id": msg_id,
@@ -197,6 +193,11 @@ def app(environ, start_response):
             "debug_trace": agent_result.get("debug_trace", []),
         },
     )
+
+
+# Vercel serverless exports
+handler = app
+application = app
 
 
 if __name__ == "__main__":
