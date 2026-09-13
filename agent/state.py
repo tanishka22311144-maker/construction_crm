@@ -56,3 +56,4 @@ class AgentState(TypedDict, total=False):
     # Completion
     goal_complete: bool
     final_response: Optional[str]
+    debug_trace: list[dict]
