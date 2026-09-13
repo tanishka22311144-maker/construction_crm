@@ -2,3 +2,5 @@
 # .agents/, and the root *.md files are meant to ship. See AGENTS.md's
 # "Git workflow — always follow" section, rule 2.
 scaffold/
+.env
+.env.local
