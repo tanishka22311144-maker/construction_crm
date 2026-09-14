@@ -28,12 +28,13 @@ def bind_request_context(conn: Any, sender_hash: Optional[str] = None, user_id: 
 
 
 def get_database_url() -> str:
-    return (
-        os.getenv("DATABASE_URL")
-        or os.getenv("SUPABASE_DB_URL")
-        or os.getenv("POSTGRES_URL")
-        or ""
-    )
+    """Return the Postgres connection URL.
+    Preference order:
+    1. SUPABASE_DB_URL – Supabase provides this for the Postgres instance.
+    2. DATABASE_URL – legacy fallback.
+    """
+    return os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or ""
+
 
 
 @contextlib.contextmanager

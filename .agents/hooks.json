@@ -19,7 +19,7 @@
         "matcher": ".*(write|edit|create).*",
         "hooks": [
           { "type": "command", "command": "python3 .agents/hooks/run_scoped_tests.py" },
-          { "type": "command", "command": "python3 .agents/hooks/vercel_build_check.py" }
+          { "type": "command", "command": "python3 .agents/hooks/git_commit_and_update_stage.py" },
         ]
       }
     ],
