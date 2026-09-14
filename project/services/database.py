@@ -50,33 +50,14 @@ def sanitize_db_url(raw_url: str) -> str:
         parsed = parsed._replace(netloc=netloc)
         return urlunparse(parsed)
     return raw_url
-    """Return the Postgres connection URL, safely encoding any problematic characters in the password.
+def get_database_url() -> str:
+    """Return the Postgres connection URL.
 
     Preference order:
     1. SUPABASE_DB_URL – Supabase provides this for the Postgres instance.
     2. DATABASE_URL – legacy fallback.
     """
-    raw_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or ""
-    if not raw_url:
-        return ""
-    # Parse the URL and ensure the password is URL‑encoded (e.g., '@' → '%40')
-    from urllib.parse import urlparse, urlunparse, quote
-    parsed = urlparse(raw_url)
-    if parsed.password and "@" in parsed.password:
-        # Encode the password component
-        encoded_pwd = quote(parsed.password, safe="")
-        # Rebuild netloc with username and encoded password
-        netloc = ""
-        if parsed.username:
-            netloc += f"{parsed.username}:{encoded_pwd}@"
-        else:
-            netloc += f"{encoded_pwd}@"
-        netloc += parsed.hostname or ""
-        if parsed.port:
-            netloc += f":{parsed.port}"
-        parsed = parsed._replace(netloc=netloc)
-        return urlunparse(parsed)
-    return raw_url
+    return os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or ""
 
 
 
