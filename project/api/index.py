@@ -121,7 +121,7 @@ def _send_whatsapp_reply(to_wa_id: str, text: str) -> None:
             print(json.dumps({"event": "send_whatsapp_reply_ok", "status": response.status}))
     except Exception as exc:  # pragma: no cover - runtime safeguard
         print(json.dumps({"event": "send_whatsapp_reply_failed", "error": str(exc)}))
-@router.get("/health-db")
+@app.get("/health-db")
 async def health_db():
     try:
         from project.services.database import get_db_connection
