@@ -18,6 +18,24 @@ app = FastAPI()
 handler = app  # Vercel entrypoint alias
 
 
+from fastapi import APIRouter
+import socket
+
+debug_router = APIRouter()
+
+@debug_router.get("/tcp-test")
+async def tcp_test():
+    """Try a plain TCP connection to the Supabase host."""
+    host = "db.wajzaygkvprhpwxewdte.supabase.co"
+    port = 5432
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            return {"status": "ok", "detail": f"Connected to {host}:{port}"}
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
+
+app.include_router(debug_router)
+
 @app.get("/api/index")
 async def verify_webhook(request: Request):
     """Meta's GET verification handshake: echo hub.challenge when
@@ -132,3 +150,23 @@ async def health_db():
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+from fastapi import APIRouter
+
+debug_router = APIRouter()
+
+@debug_router.get("/test-db")
+async def test_db():
+    """Attempt a DB connection and return diagnostics."""
+    import traceback
+    try:
+        from project.services.database import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version();")
+                row = cur.fetchone()
+        return {"status": "ok", "postgres_version": row}
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc), "traceback": traceback.format_exc()}
+
+app.include_router(debug_router)
