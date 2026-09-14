@@ -6,3 +6,9 @@ scaffold/
 .env.local
 .vercel/cache/
 __pycache__/
+
+.vercel
+.env*
+
+.env
+.env.local
