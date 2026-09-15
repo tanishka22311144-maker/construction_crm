@@ -25,9 +25,9 @@ debug_router = APIRouter()
 
 @debug_router.get("/tcp-test")
 async def tcp_test():
-    """Try a plain TCP connection to the Supabase host."""
-    host = "db.wajzaygkvprhpwxewdte.supabase.co"
-    port = 5432
+    """Try a plain TCP connection to the Supabase connection pooler."""
+    host = "aws-0-ap-northeast-1.pooler.supabase.com"
+    port = 6543
     try:
         with socket.create_connection((host, port), timeout=3):
             return {"status": "ok", "detail": f"Connected to {host}:{port}"}
