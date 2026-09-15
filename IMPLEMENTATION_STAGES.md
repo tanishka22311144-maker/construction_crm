@@ -1,12 +1,11 @@
 # Implementation stages (MINT framework)
 
-> **Current Stage 2 Implementation Progress:**
+> **Current Implementation Progress:**
 > - Stage 1: Complete and verified.
-> - Stage 2: In progress — migrating onto real `StateGraph` with read-only tool `read_project_data` and session-variable RLS.
-> - Database connectivity fixed: switched to Supavisor connection pooler (IPv4, port 6543) resolving Vercel IPv6 connection failure (`Cannot assign requested address`).
-> - Sender identity resolution fix: established canonical phone normalization (`canonicalize_whatsapp_number`) across ingestion and seeding to align with Meta's digits-only `from` format, synchronized `agent_users.whatsapp_sender_hash`, added `user_project_access` grant for test user, and resolved Meta token variable naming for outbound WhatsApp replies (`META_ACCESS_TOKEN` / `META_WHATSAPP_TOKEN`).
+> - Stage 2: Complete and verified (Migrated to real `StateGraph`, read-only tool `read_project_data` works, database connectivity and WhatsApp sender identity resolved).
+> - Stage 3: Next up — Add continuous evaluation (Validation, evaluation nodes, retry/replan logic, LangSmith).
 >
-> Work resumes at **Stage 2 Verification**.
+> Work resumes at **Stage 3 Build**.
 >
 > One thing carries forward that is *not* business as usual: Stage 1's
 > `agent/graph.py` is a plain Python for-loop over node functions
@@ -151,33 +150,33 @@ it early; it'd mean building `processed_messages` out of order.
 
 **Verify**
 
-- [ ] Seed one row each in `projects`, `agent_users` (hash matching your
+- [x] Seed one row each in `projects`, `agent_users` (hash matching your
       own test WhatsApp number), and `user_project_access` (`can_read =
       true`), plus a couple of `project_records` rows, directly via SQL
       or Supabase Studio.
-- [ ] As the `postgres`/admin role, confirm the seeded rows exist.
-- [ ] As `app_backend` with no session variable set, confirm a `select`
+- [x] As the `postgres`/admin role, confirm the seeded rows exist.
+- [x] As `app_backend` with no session variable set, confirm a `select`
       on `project_records` returns 0 rows (RLS is actually active — reuse
       the `set role app_backend; select count(*)...` check from
       `supabase/README.md`).
-- [ ] As `app_backend` with `app.current_user_id` set to your seeded
+- [x] As `app_backend` with `app.current_user_id` set to your seeded
       user, confirm the same query returns the expected rows.
-- [ ] Update `tests/smoke_test.sh` to send "Show expenses for
+- [x] Update `tests/smoke_test.sh` to send "Show expenses for
       \<your seeded project name\>" and assert the response text actually
       contains the seeded data (not a hallucinated-sounding generic
       answer).
-- [ ] `vercel dev` + smoke test passes; then `vercel deploy` preview;
+- [x] `vercel dev` + smoke test passes; then `vercel deploy` preview;
       then a real WhatsApp message asking about the seeded project — the
       reply must reflect real DB content.
-- [ ] Send a WhatsApp message asking about a project that doesn't exist,
+- [x] Send a WhatsApp message asking about a project that doesn't exist,
       or a WhatsApp number not in `agent_users` — confirm a clear
       "not found" / "not registered" reply, not a stack trace or a
       hallucinated answer.
-- [ ] Confirm `agent/graph.py` now builds and compiles a real
+- [x] Confirm `agent/graph.py` now builds and compiles a real
       `StateGraph` (e.g. it exposes a compiled `graph` object, and
       `run_agent`/a manual node-dispatch loop no longer exists anywhere
       in the diff) rather than carrying Stage 1's for-loop forward.
-- [ ] Temporarily flip your seeded `user_project_access.can_read` to
+- [x] Temporarily flip your seeded `user_project_access.can_read` to
       `false` and re-send the same project query; confirm the reply is
       a clear denial and that this happened via the `check_permission`
       conditional edge actually routing to a different node — not an
