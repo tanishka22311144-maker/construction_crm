@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Stage 1 smoke test: posts a synthetic Meta webhook payload at a running
+# Stage 2 smoke test: posts a synthetic Meta webhook payload at a running
 # `vercel dev` instance and checks for a non-error reply.
 #
-# NOT derived from your PROJECT_SPEC.md (which wasn't in the files you
-# uploaded) — this is a generic WhatsApp Cloud API payload shape. Confirm
-# field names against your real spec/webhook logs before relying on it.
+# Usage:
+#   bash tests/smoke_test.sh [URL] [MESSAGE] [SENDER]
+#
+# Default sender hash matches the seeded test user (918698510857).
 set -euo pipefail
 
 URL="${1:-http://localhost:3000/api/index}"
-MESSAGE="${2:-Hello, is anyone there?}"
+MESSAGE="${2:-Show expenses for Metro Line Extension}"
+SENDER="${3:-918698510857}"
 
 PAYLOAD=$(cat <<JSON
 {
@@ -19,7 +21,7 @@ PAYLOAD=$(cat <<JSON
           "value": {
             "messages": [
               {
-                "from": "15550001111",
+                "from": "${SENDER}",
                 "id": "wamid.smoketest.$(date +%s)",
                 "text": { "body": "${MESSAGE}" },
                 "type": "text"
@@ -35,7 +37,30 @@ JSON
 )
 
 echo "POST ${URL}"
-curl -sS -X POST "${URL}" \
+echo "Message: ${MESSAGE}"
+echo "Sender: ${SENDER}"
+echo "---"
+
+RESPONSE=$(curl -sS -X POST "${URL}" \
   -H "Content-Type: application/json" \
   -d "${PAYLOAD}" \
-  -w "\nHTTP %{http_code}\n"
+  -w "\n__HTTP__%{http_code}")
+
+HTTP_CODE=$(echo "${RESPONSE}" | grep "__HTTP__" | sed 's/__HTTP__//')
+BODY=$(echo "${RESPONSE}" | grep -v "__HTTP__")
+
+echo "${BODY}"
+echo "HTTP ${HTTP_CODE}"
+
+# Basic assertions
+if [ "${HTTP_CODE}" != "200" ]; then
+  echo "FAIL: Expected HTTP 200, got ${HTTP_CODE}"
+  exit 1
+fi
+
+if echo "${BODY}" | grep -qi "error"; then
+  echo "WARN: Response contains 'error'"
+fi
+
+echo "---"
+echo "PASS: Smoke test completed."

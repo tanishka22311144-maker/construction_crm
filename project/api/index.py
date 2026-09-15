@@ -3,7 +3,6 @@
 Handles webhook verification and executes the Stage 2 LangGraph StateGraph
 with read-only tool execution and session-variable RLS.
 """
-import hashlib
 import json
 import os
 import uuid
@@ -13,28 +12,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from agent.graph import graph
+from services.identity import canonicalize_whatsapp_number, hash_whatsapp_number
 
 app = FastAPI()
 handler = app  # Vercel entrypoint alias
 
-
-from fastapi import APIRouter
-import socket
-
-debug_router = APIRouter()
-
-@debug_router.get("/tcp-test")
-async def tcp_test():
-    """Try a plain TCP connection to the Supabase connection pooler."""
-    host = "aws-0-ap-northeast-1.pooler.supabase.com"
-    port = 6543
-    try:
-        with socket.create_connection((host, port), timeout=3):
-            return {"status": "ok", "detail": f"Connected to {host}:{port}"}
-    except Exception as exc:
-        return {"status": "error", "detail": str(exc)}
-
-app.include_router(debug_router)
 
 @app.get("/api/index")
 async def verify_webhook(request: Request):
@@ -45,7 +27,7 @@ async def verify_webhook(request: Request):
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
 
-    verify_token = os.getenv("META_VERIFY_TOKEN", "")
+    verify_token = os.getenv("META_VERIFY_TOKEN") or os.getenv("VERIFY_TOKEN", "")
     if mode == "subscribe" and token and verify_token and token == verify_token:
         return PlainTextResponse(challenge or "")
     return PlainTextResponse("Verification failed", status_code=403)
@@ -64,17 +46,26 @@ async def receive_webhook(request: Request):
     if incoming_text is None:
         return JSONResponse({"status": "ignored"})
 
-    # Compute sender hash (SHA-256) for identity anchor
-    sender_hash = ""
-    if sender_wa_id:
-        sender_hash = hashlib.sha256(str(sender_wa_id).strip().encode("utf-8")).hexdigest()
+    # Canonicalize sender number and compute SHA-256 identity hash
+    canonical_sender = canonicalize_whatsapp_number(sender_wa_id) if sender_wa_id else ""
+    sender_hash = hash_whatsapp_number(sender_wa_id) if sender_wa_id else ""
+
+    # Safe diagnostic logging of sender hash and env status (no secrets or raw phone)
+    print(json.dumps({
+        "event": "webhook_received",
+        "sender_hash": sender_hash,
+        "env_check": {
+            "has_meta_token": bool(os.getenv("META_WHATSAPP_TOKEN") or os.getenv("META_ACCESS_TOKEN")),
+            "has_phone_number_id": bool(os.getenv("META_PHONE_NUMBER_ID")),
+        },
+    }), flush=True)
 
     thread_id = f"wa-{sender_hash[:16]}" if sender_hash else f"thread-{uuid.uuid4().hex[:12]}"
 
     initial_state = {
         "incoming_message": incoming_text,
         "message_id": message_id,
-        "sender_wa_id": sender_wa_id,
+        "sender_wa_id": canonical_sender,
         "sender_hash": sender_hash,
         "thread_id": thread_id,
     }
@@ -109,19 +100,30 @@ def _extract_message(body: dict):
 
 
 def _send_whatsapp_reply(to_wa_id: str, text: str) -> None:
-    token = os.getenv("META_WHATSAPP_TOKEN", "")
+    canonical_recipient = canonicalize_whatsapp_number(to_wa_id) if to_wa_id else ""
+    token = os.getenv("META_WHATSAPP_TOKEN") or os.getenv("META_ACCESS_TOKEN") or ""
     phone_number_id = os.getenv("META_PHONE_NUMBER_ID", "")
-    if not token or not phone_number_id or not to_wa_id:
+
+    has_token = bool(token)
+    has_phone_id = bool(phone_number_id)
+    has_recipient = bool(canonical_recipient)
+
+    if not (has_token and has_phone_id and has_recipient):
         print(json.dumps({
             "event": "send_whatsapp_reply_skipped",
             "reason": "missing token/phone_number_id/recipient",
-        }))
+            "env_check": {
+                "has_token": has_token,
+                "has_phone_number_id": has_phone_id,
+                "has_recipient": has_recipient,
+            },
+        }), flush=True)
         return
 
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     payload = {
         "messaging_product": "whatsapp",
-        "to": to_wa_id,
+        "to": canonical_recipient,
         "type": "text",
         "text": {"body": text},
     }
@@ -139,10 +141,15 @@ def _send_whatsapp_reply(to_wa_id: str, text: str) -> None:
             print(json.dumps({"event": "send_whatsapp_reply_ok", "status": response.status}))
     except Exception as exc:  # pragma: no cover - runtime safeguard
         print(json.dumps({"event": "send_whatsapp_reply_failed", "error": str(exc)}))
+
+
+# --- Debug / health endpoints (non-production) ---
+
 @app.get("/health-db")
 async def health_db():
+    """Quick Postgres connectivity check."""
     try:
-        from project.services.database import get_db_connection
+        from services.database import get_db_connection
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1;")
@@ -150,23 +157,3 @@ async def health_db():
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
-
-from fastapi import APIRouter
-
-debug_router = APIRouter()
-
-@debug_router.get("/test-db")
-async def test_db():
-    """Attempt a DB connection and return diagnostics."""
-    import traceback
-    try:
-        from project.services.database import get_db_connection
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT version();")
-                row = cur.fetchone()
-        return {"status": "ok", "postgres_version": row}
-    except Exception as exc:
-        return {"status": "error", "detail": str(exc), "traceback": traceback.format_exc()}
-
-app.include_router(debug_router)

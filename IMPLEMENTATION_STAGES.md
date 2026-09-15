@@ -1,10 +1,12 @@
 # Implementation stages (MINT framework)
 
-> **Status: Stage 1 is complete and verified** — every box in its Verify
-> checklist has passed against a real deployment (preview URL live, Meta
-> webhook handshake green, a real WhatsApp message answered, the
-> double-reply gap confirmed present as expected). Work resumes at
-> **Stage 2**.
+> **Current Stage 2 Implementation Progress:**
+> - Stage 1: Complete and verified.
+> - Stage 2: In progress — migrating onto real `StateGraph` with read-only tool `read_project_data` and session-variable RLS.
+> - Database connectivity fixed: switched to Supavisor connection pooler (IPv4, port 6543) resolving Vercel IPv6 connection failure (`Cannot assign requested address`).
+> - Sender identity resolution fix: established canonical phone normalization (`canonicalize_whatsapp_number`) across ingestion and seeding to align with Meta's digits-only `from` format, synchronized `agent_users.whatsapp_sender_hash`, added `user_project_access` grant for test user, and resolved Meta token variable naming for outbound WhatsApp replies (`META_ACCESS_TOKEN` / `META_WHATSAPP_TOKEN`).
+>
+> Work resumes at **Stage 2 Verification**.
 >
 > One thing carries forward that is *not* business as usual: Stage 1's
 > `agent/graph.py` is a plain Python for-loop over node functions

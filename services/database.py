@@ -27,13 +27,38 @@ def bind_request_context(conn: Any, sender_hash: Optional[str] = None, user_id: 
         )
 
 
+def sanitize_db_url(raw_url: str) -> str:
+    """Ensure the password component of a Postgres URL is URL‑encoded.
+
+    This handles cases where the password itself contains an '@' which would
+    otherwise be interpreted as the host delimiter, leading to a host‑name
+    resolution error.
+    """
+    from urllib.parse import urlparse, urlunparse, quote
+    parsed = urlparse(raw_url)
+    if parsed.password and "@" in parsed.password:
+        encoded_pwd = quote(parsed.password, safe="")
+        # rebuild netloc with possible username and encoded password
+        netloc = ""
+        if parsed.username:
+            netloc += f"{parsed.username}:{encoded_pwd}@"
+        else:
+            netloc += f"{encoded_pwd}@"
+        netloc += parsed.hostname or ""
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        parsed = parsed._replace(netloc=netloc)
+        return urlunparse(parsed)
+    return raw_url
 def get_database_url() -> str:
-    return (
-        os.getenv("DATABASE_URL")
-        or os.getenv("SUPABASE_DB_URL")
-        or os.getenv("POSTGRES_URL")
-        or ""
-    )
+    """Return the Postgres connection URL.
+
+    Preference order:
+    1. SUPABASE_DB_URL – Supabase provides this for the Postgres instance.
+    2. DATABASE_URL – legacy fallback.
+    """
+    return os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or ""
+
 
 
 @contextlib.contextmanager
@@ -42,7 +67,7 @@ def get_db_connection(
     user_id: Optional[str] = None,
 ) -> Generator[Any, None, None]:
     """Context manager for obtaining a database connection with bound request context."""
-    db_url = get_database_url()
+    db_url = sanitize_db_url(get_database_url())
     if not db_url or psycopg2 is None:
         raise RuntimeError("Database connection not configured or psycopg2 is unavailable.")
 

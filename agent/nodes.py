@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import re
@@ -9,6 +8,7 @@ from urllib import error, request
 
 from services.authorization import authorize
 from services.database import execute_query
+from services.identity import hash_whatsapp_number
 from tools.read_project_data import read_project_data
 
 
@@ -165,8 +165,7 @@ def receive_request(state: dict) -> dict:
     # Derive sender_hash if sender_wa_id is present and sender_hash not already set
     sender_wa_id = state.get("sender_wa_id")
     if sender_wa_id and not state.get("sender_hash"):
-        sender_hash = hashlib.sha256(str(sender_wa_id).strip().encode("utf-8")).hexdigest()
-        state["sender_hash"] = sender_hash
+        state["sender_hash"] = hash_whatsapp_number(sender_wa_id)
 
     _debug_log(
         "receive_request",
@@ -189,8 +188,12 @@ def load_instructions(state: dict) -> dict:
 def load_identity_and_memory(state: dict) -> dict:
     """Look up active user in agent_users matching sender_hash."""
     sender_hash = state.get("sender_hash")
+    if not sender_hash and state.get("sender_wa_id"):
+        sender_hash = hash_whatsapp_number(state.get("sender_wa_id"))
+        state["sender_hash"] = sender_hash
+
     if not sender_hash:
-        _debug_log("load_identity_no_sender_hash")
+        _debug_log("load_identity_result", sender_hash=None, result="not_matched", reason="missing_sender_hash")
         state["user_id"] = None
         return state
 
@@ -207,10 +210,10 @@ def load_identity_and_memory(state: dict) -> dict:
             state["user_id"] = str(user_row["id"])
             state["user_role"] = user_row.get("role")
             state["user_name"] = user_row.get("display_name")
-            _debug_log("load_identity_found", user_id=state["user_id"], role=state.get("user_role"))
+            _debug_log("load_identity_result", sender_hash=sender_hash, result="matched", role=state.get("user_role"))
         else:
             state["user_id"] = None
-            _debug_log("load_identity_not_found", sender_hash=sender_hash)
+            _debug_log("load_identity_result", sender_hash=sender_hash, result="not_matched")
     except Exception as exc:
         _debug_log("load_identity_error", error=str(exc))
         state["user_id"] = None
