@@ -249,6 +249,7 @@ processed_messages
 
 ```
 project/
+├── dashboard.py             -- basic analytics and new user WhatsApp registration
 ├── api/
 │   └── index.py
 ├── agent/
@@ -1040,10 +1041,13 @@ WhatsApp-driven resume flow.
 27. LangSmith tracing · 28. Agent event recording · 29. Trace metadata ·
 30. Error classification · 31. Evaluation datasets.
 
-**Phase 6 — Deployment**
-32. Configure Vercel · 33. Environment variables · 34. Function duration ·
-35. Deploy preview · 36. Run permission and failure tests (including
-forged/invalid approval attempts, per §11) · 37. Deploy production.
+**Phase 6 — Analytics and Registration Dashboard**
+32. Build `dashboard.py` frontend/endpoints · 33. Analytics views for `projects` and `project_records` · 34. WhatsApp number registration flow with canonical hashing.
+
+**Phase 7 — Deployment**
+35. Configure Vercel · 36. Environment variables · 37. Function duration ·
+38. Deploy preview · 39. Run permission and failure tests (including
+forged/invalid approval attempts, per §11) · 40. Deploy production.
 
 ---
 

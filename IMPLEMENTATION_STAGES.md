@@ -364,11 +364,32 @@ it early; it'd mean building `processed_messages` out of order.
 
 ---
 
-## After Stage 6
+## Stage 7 — Analytics and Registration Dashboard
 
-At this point every table, tool, and node in `PROJECT_SPEC.md` exists and
-has been exercised over real WhatsApp messages. What's left is what
-PROJECT_SPEC.md §18 originally called "Phase 6: Deployment" —
+> Add a basic web dashboard (`dashboard.py`) providing project analytics and a self-serve WhatsApp number registration flow for new users.
+
+**Build**
+
+- Create `project/dashboard.py` (e.g., using Streamlit or a basic FastAPI frontend).
+- Implement a basic analytics view reading from `project_records` and `projects`.
+- Implement a user registration form: captures user details, WhatsApp number, and securely hashes it via `canonicalize_whatsapp_number` and `hash_whatsapp_number` before storing in `agent_users`.
+- Ensure registration endpoints enforce appropriate security (e.g., admin approval for new accounts or domain verification).
+- Configure deployment for the dashboard so it can run alongside the Vercel webhook function.
+
+**Verify**
+
+- [ ] Run the dashboard locally and successfully load the analytics view.
+- [ ] Submit a new user registration via the dashboard UI.
+- [ ] Verify the new user appears in the `agent_users` table with the correct canonicalized `whatsapp_sender_hash`.
+- [ ] Have the new user send a WhatsApp message and confirm the agent resolves their identity correctly.
+
+---
+
+## After Stage 7
+
+At this point every table, tool, node, and dashboard in `PROJECT_SPEC.md` exists and
+has been exercised over real WhatsApp messages and web views. What's left is what
+PROJECT_SPEC.md §18 originally called "Phase 6/7: Deployment" —
 production Vercel config, environment variables, function duration
 tuning, and a final production deploy — which is now just hardening an
 already-verified system rather than a leap of faith.
