@@ -1,3 +1,5 @@
+import os
+import sys
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
@@ -71,8 +73,11 @@ def build_graph():
 
     # TODO(stage-4): MemorySaver is temporary for Stage 2 & 3.
     # Stage 4 replaces this with PostgresSaver (langgraph-checkpoint-postgres).
-    checkpointer = MemorySaver()
+    # LangGraph API / Studio manages its own persistence and forbids custom checkpointers.
+    if "langgraph_api" in sys.modules or os.getenv("LANGGRAPH_API") or any("langgraph" in arg for arg in sys.argv):
+        return builder.compile()
 
+    checkpointer = MemorySaver()
     return builder.compile(checkpointer=checkpointer)
 
 
