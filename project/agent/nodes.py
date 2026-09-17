@@ -222,36 +222,54 @@ def load_identity_and_memory(state: dict) -> dict:
 
 
 def understand_request(state: dict) -> dict:
-    """Stage 2 simplified request understanding: determine if read request and extract project reference."""
+    """Use LLM to classify intent and extract project reference from the user message."""
     incoming = (state.get("incoming_message") or "").strip()
-    lower = incoming.lower()
+    instructions = state.get("instructions") or _instructions_text()
 
-    # Determine record type if specified
+    classification_prompt = f"""You are classifying a WhatsApp message sent to a construction CRM assistant.
+
+Message: "{incoming}"
+
+Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
+- "intent": one of "read", "write", "unsupported"
+- "record_type": one of "expense", "daily_log", "equipment_log", or null if not specified
+- "project_name": the project name or code mentioned, or null if not mentioned
+
+Example: {{"intent": "read", "record_type": "expense", "project_name": "Metro Line Extension"}}"""
+
+    llm_response = _get_llm_reply(classification_prompt, system_prompt=instructions)
+
+    # Try to parse LLM output as JSON
+    intent = "read"
     record_type = None
-    if "expense" in lower or "cost" in lower or "spent" in lower:
-        record_type = "expense"
-    elif "daily log" in lower or "site log" in lower or "log" in lower:
-        record_type = "daily_log"
-    elif "equipment" in lower or "machinery" in lower:
-        record_type = "equipment_log"
-
-    state["intent"] = "read"
-    state["selected_tool"] = "read_project_data"
-
-    # Attempt to extract project name hint from message (e.g., "for Project Alpha" or "in Metro Line")
-    project_name_match = re.search(r'(?:for|in|project)\s+([A-Za-z0-9_\-\s]+)', incoming, re.IGNORECASE)
     extracted_name = None
-    if project_name_match:
-        extracted_name = project_name_match.group(1).strip()
-        # Clean trailing punctuation or keywords
-        extracted_name = re.sub(r'[\?\.\!].*$', '', extracted_name).strip()
 
+    try:
+        # Strip markdown fences if present
+        cleaned = llm_response.strip().strip("```json").strip("```").strip()
+        parsed = json.loads(cleaned)
+        intent = parsed.get("intent", "read")
+        record_type = parsed.get("record_type")
+        extracted_name = parsed.get("project_name")
+        _debug_log("understand_request_llm", intent=intent, record_type=record_type, project_name=extracted_name)
+    except (json.JSONDecodeError, AttributeError):
+        # Fallback: basic keyword regex
+        lower = incoming.lower()
+        if "expense" in lower or "cost" in lower or "spent" in lower:
+            record_type = "expense"
+        elif "daily log" in lower or "site log" in lower:
+            record_type = "daily_log"
+        elif "equipment" in lower or "machinery" in lower:
+            record_type = "equipment_log"
+        m = re.search(r'(?:for|in|project)\s+([A-Za-z0-9_\-\s]+)', incoming, re.IGNORECASE)
+        if m:
+            extracted_name = re.sub(r'[\?\.\!].*$', '', m.group(1)).strip()
+        _debug_log("understand_request_fallback", intent=intent, record_type=record_type, project_name=extracted_name)
+
+    state["intent"] = intent
+    state["selected_tool"] = "read_project_data" if intent == "read" else None
     state["project_name"] = extracted_name
-    state["tool_arguments"] = {
-        "record_type": record_type,
-        "limit": 20,
-    }
-    _debug_log("understand_request", intent=state["intent"], project_name=state["project_name"], record_type=record_type)
+    state["tool_arguments"] = {"record_type": record_type, "limit": 20}
     return state
 
 
@@ -330,29 +348,40 @@ def execute_tool(state: dict) -> dict:
 
 
 def generate_grounded_response(state: dict) -> dict:
-    """Synthesize final user response grounded strictly in tool data."""
+    """Pass real DB records to the LLM and produce a grounded natural-language reply."""
     tool_result = state.get("tool_result", {})
     records = tool_result.get("records", [])
     project_name = state.get("project_name") or "the project"
     record_type = state.get("tool_arguments", {}).get("record_type") or "records"
+    incoming = state.get("incoming_message", "")
+    instructions = state.get("instructions") or _instructions_text()
 
     if not records:
-        state["final_response"] = f"No {record_type} found for {project_name}."
-        state["goal_complete"] = True
-        return state
+        # No data — still ask the LLM to phrase this naturally
+        grounding = f"No {record_type} records were found for project '{project_name}'."
+    else:
+        # Serialize records as compact plain-text context (no SQL, no internal IDs)
+        lines = [f"Data retrieved — {len(records)} {record_type} record(s) for project '{project_name}':"]
+        for i, r in enumerate(records[:20], 1):
+            date_str = str(r.get("record_date") or "")
+            title = r.get("title") or r.get("description") or "Entry"
+            amount = f", amount: {r['amount']} {r.get('unit','')}" if r.get("amount") is not None else ""
+            lines.append(f"  {i}. {date_str} — {title}{amount}")
+        grounding = "\n".join(lines)
 
-    # Format record summary
-    summary_lines = [f"Found {len(records)} {record_type} for {project_name}:"]
-    for idx, r in enumerate(records[:10], 1):
-        date_str = str(r.get("record_date") or "")
-        title = r.get("title") or r.get("description") or "Entry"
-        amount_part = f" - ${r['amount']}" if r.get("amount") is not None else ""
-        unit_part = f" ({r['unit']})" if r.get("unit") else ""
-        summary_lines.append(f"{idx}. {date_str}: {title}{amount_part}{unit_part}")
+    synthesis_prompt = (
+        f"User asked (via WhatsApp): \"{incoming}\"\n\n"
+        f"{grounding}\n\n"
+        "Write a brief, friendly WhatsApp reply that answers the user based strictly on the data above. "
+        "Do not invent any information not present in the data. Keep it under 5 lines."
+    )
 
-    state["final_response"] = "\n".join(summary_lines)
+    llm_reply = _get_llm_reply(synthesis_prompt, system_prompt=instructions)
+
+    # If LLM is unavailable it returns a fallback string — still usable
+    state["final_response"] = llm_reply
     state["goal_complete"] = True
-    _debug_log("generate_grounded_response_done", response_preview=state["final_response"][:160])
+    _debug_log("generate_grounded_response_done", response_preview=llm_reply[:160])
     return state
 
 
