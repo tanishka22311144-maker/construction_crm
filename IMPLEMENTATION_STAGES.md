@@ -2,10 +2,9 @@
 
 > **Current Implementation Progress:**
 > - Stage 1: Complete and verified.
-> - Stage 2: Complete and verified (Migrated to real `StateGraph`, read-only tool `read_project_data` works, database connectivity and WhatsApp sender identity resolved).
-> - Stage 3: Next up — Add continuous evaluation (Validation, evaluation nodes, retry/replan logic, LangSmith).
+> - Stage 2: INCOMPLETE / IN PROGRESS — Migrated to real `StateGraph`, read-only tool `read_project_data` works, database connectivity and WhatsApp identity resolution are fixed. However, **LLM involvement is currently missing**: `_get_llm_reply` is defined in `nodes.py` but never called, `understand_request` relies on basic keyword regex, and `generate_grounded_response` outputs hardcoded template strings without invoking the LLM using `instructions.md` and DB context.
 >
-> Work resumes at **Stage 3 Build**.
+> Work resumes at **Stage 2 LLM Integration & Grounded Synthesis**.
 >
 > One thing carries forward that is *not* business as usual: Stage 1's
 > `agent/graph.py` is a plain Python for-loop over node functions
@@ -161,13 +160,17 @@ it early; it'd mean building `processed_messages` out of order.
       `supabase/README.md`).
 - [x] As `app_backend` with `app.current_user_id` set to your seeded
       user, confirm the same query returns the expected rows.
-- [x] Update `tests/smoke_test.sh` to send "Show expenses for
+- [ ] Update `tests/smoke_test.sh` to send "Show expenses for
       \<your seeded project name\>" and assert the response text actually
       contains the seeded data (not a hallucinated-sounding generic
-      answer).
-- [x] `vercel dev` + smoke test passes; then `vercel deploy` preview;
+      answer). **BLOCKED: `generate_grounded_response` outputs a hardcoded
+      template string; LLM is never called, so the response is not
+      genuinely grounded.**
+- [ ] `vercel dev` + smoke test passes; then `vercel deploy` preview;
       then a real WhatsApp message asking about the seeded project — the
-      reply must reflect real DB content.
+      reply must reflect real DB content **in natural language via the LLM**.
+      **BLOCKED: same reason — `_get_llm_reply` is defined but never
+      invoked in any graph node.**
 - [x] Send a WhatsApp message asking about a project that doesn't exist,
       or a WhatsApp number not in `agent_users` — confirm a clear
       "not found" / "not registered" reply, not a stack trace or a
