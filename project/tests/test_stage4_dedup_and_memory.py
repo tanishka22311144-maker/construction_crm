@@ -108,6 +108,22 @@ class TestStage4DedupAndMemory(unittest.TestCase):
         self.assertTrue(res.get("goal_complete"))
         self.assertIsNotNone(res.get("final_response"))
 
+    def test_understand_request_followup_yes(self):
+        from agent.nodes import understand_request
+
+        state = {
+            "incoming_message": "Yes",
+            "messages": [
+                {"role": "user", "content": "What are active projects"},
+                {"role": "assistant", "content": "The only active project is Metro Line Extension. Let me know if you need more details on it!"},
+                {"role": "user", "content": "Yes"},
+            ],
+        }
+
+        res = understand_request(state)
+        self.assertEqual(res["intent"], "read")
+        self.assertEqual(res["selected_tool"], "read_project_data")
+
 
 if __name__ == "__main__":
     unittest.main()

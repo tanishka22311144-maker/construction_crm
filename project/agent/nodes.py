@@ -249,14 +249,33 @@ def understand_request(state: dict) -> dict:
     incoming = (state.get("incoming_message") or "").strip()
     instructions = state.get("instructions") or _instructions_text()
 
+    # Stage 4: Include recent conversation turns for context-aware classification
+    conversation_context = ""
+    history_messages = state.get("messages") or []
+    if len(history_messages) > 1:
+        prior_turns = []
+        for msg in history_messages[:-1]:
+            if isinstance(msg, dict):
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                content = str(msg.get("content") or "")
+            else:
+                msg_type = getattr(msg, "type", "")
+                role = "User" if msg_type in ("human", "user") or type(msg).__name__ == "HumanMessage" else "Assistant"
+                content = str(getattr(msg, "content", "") or "")
+            if content:
+                prior_turns.append(f"{role}: {content}")
+        if prior_turns:
+            conversation_context = "Recent conversation context:\n" + "\n".join(prior_turns[-4:]) + "\n\n"
+
     classification_prompt = f"""You are classifying a WhatsApp message sent to a construction CRM assistant.
 
-Message: "{incoming}"
+{conversation_context}Latest user message: "{incoming}"
 
+Using the conversation context if available (e.g. if the user says "Yes", "Sure", "Show me", or refers to an earlier discussed project):
 Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
 - "intent": one of "read", "write", "unsupported"
 - "record_type": one of "expense", "daily_log", "equipment_log", or null if not specified
-- "project_name": the project name or code mentioned, or null if not mentioned
+- "project_name": the project name or code mentioned or implied from conversation, or null if none
 
 Example: {{"intent": "read", "record_type": "expense", "project_name": "Metro Line Extension"}}"""
 
@@ -276,17 +295,23 @@ Example: {{"intent": "read", "record_type": "expense", "project_name": "Metro Li
         extracted_name = parsed.get("project_name")
         _debug_log("understand_request_llm", intent=intent, record_type=record_type, project_name=extracted_name)
     except (json.JSONDecodeError, AttributeError):
-        # Fallback: basic keyword regex
-        lower = incoming.lower()
+        # Fallback: keyword regex + follow-up detection
+        lower = incoming.lower().strip()
         if "expense" in lower or "cost" in lower or "spent" in lower:
             record_type = "expense"
         elif "daily log" in lower or "site log" in lower:
             record_type = "daily_log"
         elif "equipment" in lower or "machinery" in lower:
             record_type = "equipment_log"
+
+        # Check for explicit project mention
         m = re.search(r'(?:for|in|project)\s+([A-Za-z0-9_\-\s]+)', incoming, re.IGNORECASE)
         if m:
             extracted_name = re.sub(r'[\?\.\!].*$', '', m.group(1)).strip()
+        elif lower in ("yes", "sure", "yep", "details", "more", "please", "ok", "okay"):
+            # Follow-up affirmative: infer read intent from previous turn
+            intent = "read"
+
         _debug_log("understand_request_fallback", intent=intent, record_type=record_type, project_name=extracted_name)
 
     state["intent"] = intent
