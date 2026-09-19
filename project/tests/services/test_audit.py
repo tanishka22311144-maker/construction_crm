@@ -41,6 +41,21 @@ class TestAuditService(unittest.TestCase):
         self.assertEqual(len(history), 2)
         # Should be sorted chronologically
         self.assertEqual(history[0]["user_message"], "Latest question")
+        # Verify default 2.0 hour cutoff passed in query params
+        args, kwargs = mock_exec.call_args
+        sql_query, params = args[0], args[1]
+        self.assertIn("INTERVAL '1 hour'", sql_query)
+        self.assertEqual(params, ("user-123", 2.0, 6))
+
+    @patch("services.audit.execute_query")
+    def test_load_recent_chat_history_cutoff_disabled(self, mock_exec):
+        mock_exec.return_value = []
+        history = load_recent_chat_history("user-123", inactivity_cutoff_hours=0)
+        self.assertEqual(history, [])
+        args, kwargs = mock_exec.call_args
+        sql_query, params = args[0], args[1]
+        self.assertNotIn("INTERVAL '1 hour'", sql_query)
+        self.assertEqual(params, ("user-123", 6))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 Per PROJECT_SPEC.md §10 (Idempotency), §12 (Memory), and §15 (Audit events).
 """
 import json
+import os
 import uuid
 from typing import Any, Optional
 
@@ -112,20 +113,48 @@ def record_chat_session(
         print(json.dumps({"event": "record_chat_session_error", "error": str(exc)}), flush=True)
 
 
-def load_recent_chat_history(user_id: Optional[str], sender_hash: Optional[str] = None, limit: int = 6) -> list[dict[str, str]]:
-    """Retrieve last N messages from chat_sessions to supply multi-turn context."""
+def load_recent_chat_history(
+    user_id: Optional[str],
+    sender_hash: Optional[str] = None,
+    limit: int = 6,
+    inactivity_cutoff_hours: Optional[float] = None,
+) -> list[dict[str, str]]:
+    """Retrieve last N messages from chat_sessions to supply multi-turn context within an inactivity cutoff.
+
+    Defaults to 2.0 hours (configurable via CHAT_SESSION_INACTIVITY_HOURS env var or direct arg).
+    Set inactivity_cutoff_hours <= 0 to disable cutoff and fetch purely by limit.
+    """
     if not user_id:
         return []
 
-    sql = """
-        SELECT user_message, assistant_reply, created_at
-        FROM public.chat_sessions
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-        LIMIT %s;
-    """
+    if inactivity_cutoff_hours is None:
+        try:
+            inactivity_cutoff_hours = float(os.getenv("CHAT_SESSION_INACTIVITY_HOURS", "2"))
+        except ValueError:
+            inactivity_cutoff_hours = 2.0
+
+    if inactivity_cutoff_hours > 0:
+        sql = """
+            SELECT user_message, assistant_reply, created_at
+            FROM public.chat_sessions
+            WHERE user_id = %s
+              AND created_at >= NOW() - (%s * INTERVAL '1 hour')
+            ORDER BY created_at DESC
+            LIMIT %s;
+        """
+        params: tuple = (user_id, inactivity_cutoff_hours, limit)
+    else:
+        sql = """
+            SELECT user_message, assistant_reply, created_at
+            FROM public.chat_sessions
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s;
+        """
+        params = (user_id, limit)
+
     try:
-        rows = execute_query(sql, (user_id, limit), sender_hash=sender_hash, user_id=user_id)
+        rows = execute_query(sql, params, sender_hash=sender_hash, user_id=user_id)
         # Reverse to chronological order
         chronological = list(reversed(rows))
         return [
