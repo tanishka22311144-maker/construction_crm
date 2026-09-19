@@ -9,7 +9,14 @@ from urllib import error, request
 from services.authorization import authorize
 from services.database import execute_query
 from services.identity import hash_whatsapp_number
+from services.verification import validate_read_result, classify_error
 from tools.read_project_data import read_project_data
+
+# Bounded execution limits per PROJECT_SPEC.md §9
+MAX_AGENT_STEPS = 10
+MAX_TRANSIENT_RETRIES = 2
+MAX_REPLANS = 2
+MAX_TOOL_CALLS_PER_RUN = 8
 
 
 def _debug_log(step: str, **details):
@@ -157,6 +164,9 @@ def receive_request(state: dict) -> dict:
     state.setdefault("run_id", f"run-{uuid.uuid4().hex[:12]}")
     state.setdefault("message_id", state.get("message_id") or f"msg-{uuid.uuid4().hex[:12]}")
     state.setdefault("debug_trace", [])
+    state.setdefault("step_count", 0)
+    state.setdefault("retry_count", 0)
+    state.setdefault("replan_count", 0)
 
     incoming_message = state.get("incoming_message") or ""
     state["incoming_message"] = incoming_message
@@ -273,8 +283,63 @@ Example: {{"intent": "read", "record_type": "expense", "project_name": "Metro Li
     return state
 
 
+def create_plan(state: dict) -> dict:
+    """Stage 3: Break request into explicit operational steps."""
+    intent = state.get("intent", "read")
+    selected_tool = state.get("selected_tool")
+
+    if intent == "read" and selected_tool == "read_project_data":
+        plan = [
+            {"step": 1, "action": "resolve_project"},
+            {"step": 2, "action": "check_permission"},
+            {"step": 3, "action": "read_project_data"},
+            {"step": 4, "action": "evaluate_goal"},
+        ]
+    else:
+        plan = [
+            {"step": 1, "action": "unsupported"},
+        ]
+
+    state["plan"] = plan
+    state["current_step"] = 1
+    state["requested_outcome"] = f"Query {state.get('tool_arguments', {}).get('record_type') or 'records'} for {state.get('project_name') or 'project'}"
+    _debug_log("create_plan", plan=plan, replan_count=state.get("replan_count", 0))
+    return state
+
+
+def validate_plan(state: dict) -> dict:
+    """Stage 3: Validate plan actions against allowed operations and bounded limits."""
+    plan = state.get("plan") or []
+    allowed_actions = {"resolve_project", "check_permission", "read_project_data", "evaluate_goal"}
+
+    if not plan:
+        state["plan_valid"] = False
+        state["error_reason"] = "Plan is empty."
+        _debug_log("validate_plan_empty")
+        return state
+
+    for step in plan:
+        action = step.get("action")
+        if action not in allowed_actions:
+            state["plan_valid"] = False
+            state["error_reason"] = f"Operation '{action}' is unsupported. In Stage 3, only reading project records is supported."
+            state["final_response"] = "I can only help query project records (expenses, daily logs, equipment logs) at this time. Other operations are not supported yet."
+            _debug_log("validate_plan_unsupported_action", action=action)
+            return state
+
+    state["plan_valid"] = True
+    _debug_log("validate_plan_success", steps=len(plan))
+    return state
+
+
 def resolve_project(state: dict) -> dict:
-    """Resolve project_name to a verified project_id from public.projects."""
+    """Resolve project_name to a verified project_id from public.projects.
+
+    Per PROJECT_SPEC.md §5 & §9:
+    - Exact match -> proceed to permission check
+    - Ambiguous / multiple matches -> ask_user (do not guess)
+    - No match -> ask_user (do not guess)
+    """
     project_name = state.get("project_name")
     user_id = state.get("user_id")
 
@@ -292,26 +357,42 @@ def resolve_project(state: dict) -> dict:
         if len(rows) == 1:
             state["project_id"] = str(rows[0]["id"])
             state["project_name"] = rows[0]["project_name"]
+            state["resolution_status"] = "exact"
             _debug_log("resolve_project_exact", project_id=state["project_id"], project_name=state["project_name"])
         elif len(rows) > 1 and project_name:
-            # Pick first match if exact match on code/name
-            exact = [r for r in rows if r["project_name"].lower() == project_name.lower() or r["project_code"].lower() == project_name.lower()]
-            if exact:
+            # Check for exact case-insensitive match on name or code
+            exact = [
+                r for r in rows
+                if r["project_name"].lower() == project_name.lower() or r["project_code"].lower() == project_name.lower()
+            ]
+            if len(exact) == 1:
                 state["project_id"] = str(exact[0]["id"])
                 state["project_name"] = exact[0]["project_name"]
+                state["resolution_status"] = "exact"
+                _debug_log("resolve_project_exact_case_insensitive", project_id=state["project_id"])
             else:
-                state["project_id"] = str(rows[0]["id"])
-                state["project_name"] = rows[0]["project_name"]
-            _debug_log("resolve_project_multiple", project_id=state["project_id"])
-        elif len(rows) == 0 and not project_name:
-            # Fallback if no project name given and query without filter returned none
+                state["project_id"] = None
+                state["resolution_status"] = "ambiguous"
+                match_names = ", ".join([f"'{r['project_name']}'" for r in rows[:3]])
+                state["final_response"] = f"Which project did you mean? Found multiple possibilities: {match_names}."
+                _debug_log("resolve_project_ambiguous", search_term=project_name, count=len(rows))
+        elif len(rows) > 1 and not project_name:
+            # User didn't specify any project and there are multiple projects
             state["project_id"] = None
+            state["resolution_status"] = "ambiguous"
+            match_names = ", ".join([f"'{r['project_name']}'" for r in rows[:3]])
+            state["final_response"] = f"Please specify a project. Available projects: {match_names}."
+            _debug_log("resolve_project_no_name_multiple")
         else:
             state["project_id"] = None
-            _debug_log("resolve_project_none", search_term=project_name)
+            state["resolution_status"] = "not_found"
+            state["final_response"] = f"Could not find any project matching '{project_name or ''}'. Please specify a valid project name."
+            _debug_log("resolve_project_not_found", search_term=project_name)
     except Exception as exc:
         _debug_log("resolve_project_error", error=str(exc))
         state["project_id"] = None
+        state["resolution_status"] = "error"
+        state["final_response"] = "An error occurred while looking up the project."
 
     return state
 
@@ -347,6 +428,78 @@ def execute_tool(state: dict) -> dict:
     return state
 
 
+def validate_tool_result(state: dict) -> dict:
+    """Stage 3: Structural verification of tool result and transient retry classification."""
+    tool_result = state.get("tool_result") or {}
+    verification = validate_read_result(tool_result)
+    state["verification_result"] = verification
+
+    if verification["valid"]:
+        state["validation_status"] = "valid"
+        _debug_log("validate_tool_result_passed", row_count=verification.get("row_count"))
+        return state
+
+    # Failure handling
+    state["last_error"] = {
+        "code": verification.get("code"),
+        "error": verification.get("error"),
+        "category": verification.get("category"),
+    }
+
+    if verification.get("is_transient"):
+        retry_count = state.get("retry_count", 0) + 1
+        state["retry_count"] = retry_count
+        if retry_count <= MAX_TRANSIENT_RETRIES:
+            state["validation_status"] = "retry"
+            _debug_log("validate_tool_result_retry", attempt=retry_count, max_retries=MAX_TRANSIENT_RETRIES)
+            return state
+        else:
+            state["validation_status"] = "failed"
+            state["final_response"] = f"The database query timed out after {MAX_TRANSIENT_RETRIES} attempts. Please try again in a few moments."
+            _debug_log("validate_tool_result_max_retries_exceeded")
+            return state
+
+    # Fatal / non-retryable error
+    state["validation_status"] = "failed"
+    state["final_response"] = f"Query failed: {verification.get('error')}"
+    _debug_log("validate_tool_result_fatal", code=verification.get("code"))
+    return state
+
+
+def evaluate_goal(state: dict) -> dict:
+    """Stage 3: Verify if the requested goal is fulfilled, or if replanning is needed."""
+    # Increment execution step count
+    step_count = state.get("step_count", 0) + 1
+    state["step_count"] = step_count
+
+    if step_count > MAX_AGENT_STEPS:
+        state["evaluation_status"] = "exceeded"
+        state["goal_complete"] = False
+        state["final_response"] = "The request exceeded the maximum allowed execution steps."
+        _debug_log("evaluate_goal_exceeded_steps", step_count=step_count)
+        return state
+
+    verification = state.get("verification_result") or {}
+    if verification.get("valid"):
+        state["goal_complete"] = True
+        state["evaluation_status"] = "complete"
+        _debug_log("evaluate_goal_complete")
+        return state
+
+    # Check replan count
+    replan_count = state.get("replan_count", 0)
+    if replan_count < MAX_REPLANS:
+        state["replan_count"] = replan_count + 1
+        state["evaluation_status"] = "replan"
+        _debug_log("evaluate_goal_replan", replan_count=state["replan_count"])
+        return state
+
+    state["goal_complete"] = False
+    state["evaluation_status"] = "failed"
+    _debug_log("evaluate_goal_failed")
+    return state
+
+
 def generate_grounded_response(state: dict) -> dict:
     """Pass real DB records to the LLM and produce a grounded natural-language reply."""
     tool_result = state.get("tool_result", {})
@@ -365,7 +518,9 @@ def generate_grounded_response(state: dict) -> dict:
         for i, r in enumerate(records[:20], 1):
             date_str = str(r.get("record_date") or "")
             title = r.get("title") or r.get("description") or "Entry"
-            amount = f", amount: {r['amount']} {r.get('unit','')}" if r.get("amount") is not None else ""
+            unit = r.get("unit", "")
+            unit_prefix = "$" if unit == "USD" else ""
+            amount = f", amount: {unit_prefix}{r['amount']} {unit}".strip() if r.get("amount") is not None else ""
             lines.append(f"  {i}. {date_str} — {title}{amount}")
         grounding = "\n".join(lines)
 
@@ -378,15 +533,25 @@ def generate_grounded_response(state: dict) -> dict:
 
     llm_reply = _get_llm_reply(synthesis_prompt, system_prompt=instructions)
 
-    # If LLM is unavailable it returns a fallback string — still usable
-    state["final_response"] = llm_reply
+    # If LLM is unconfigured (e.g. unit tests / offline dev), fall back to structured grounding text
+    if "GROQ_API_KEY is not configured" in llm_reply or "failing for all configured" in llm_reply:
+        state["final_response"] = f"Here is the retrieved data:\n{grounding}"
+    else:
+        state["final_response"] = llm_reply
+
     state["goal_complete"] = True
-    _debug_log("generate_grounded_response_done", response_preview=llm_reply[:160])
+    _debug_log("generate_grounded_response_done", response_preview=state["final_response"][:160])
     return state
 
 
 def safe_failure(state: dict) -> dict:
     """Safe exit path when validation, identity, or permissions fail."""
+    # If a specific final_response was already prepared, preserve it
+    if state.get("final_response"):
+        state["goal_complete"] = False
+        _debug_log("safe_failure_preserved", message=state["final_response"])
+        return state
+
     perm = state.get("permission_result", {})
     user_id = state.get("user_id")
     project_id = state.get("project_id")
@@ -398,7 +563,7 @@ def safe_failure(state: dict) -> dict:
     elif not perm.get("allowed"):
         msg = f"Access denied: {perm.get('reason', 'You do not have permission to access this project.')}"
     else:
-        msg = "An error occurred while processing your request. Please try again or contact your admin."
+        msg = state.get("error_reason") or "An error occurred while processing your request. Please try again or contact your admin."
 
     state["final_response"] = msg
     state["goal_complete"] = False

@@ -2,10 +2,10 @@
 
 > **Current Implementation Progress:**
 > - Stage 1: Complete and verified.
-> - Stage 2: Complete and verified (Migrated to real `StateGraph`, read-only tool `read_project_data` works, session-variable RLS, WhatsApp identity resolution, and live LLM grounded response synthesis are fully operational).
-> - Stage 3: Next up — Add continuous evaluation (Verification envelope, create_plan, validate_plan, resolve_project ambiguity handling, validate_tool_result, retry/replan logic, and LangSmith tracing).
+> - Stage 2: Complete and verified.
+> - Stage 3: Build complete — implemented `services/verification.py` (structural read validation, transient error classification), graph nodes `create_plan`, `validate_plan`, ambiguity handling in `resolve_project`, `validate_tool_result`, `evaluate_goal`, bounded execution stops (`MAX_AGENT_STEPS`, `MAX_TRANSIENT_RETRIES`, `MAX_REPLANS`), LangSmith tracing metadata configuration in `index.py`, and automated evaluation test suite `test_stage3_eval.py`.
 >
-> Work resumes at **Stage 3 Build**.
+> Work resumes at **Stage 3 Verification**.
 >
 > One thing carries forward that is *not* business as usual: Stage 1's
 > `agent/graph.py` is a plain Python for-loop over node functions

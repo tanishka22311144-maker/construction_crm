@@ -33,6 +33,7 @@ class AgentState(TypedDict, total=False):
 
     # Plan
     plan: list[dict]
+    plan_valid: bool
     current_step: int
     selected_tool: Optional[str]
     tool_arguments: dict
@@ -47,11 +48,16 @@ class AgentState(TypedDict, total=False):
     # Execution
     tool_result: dict
     verification_result: dict
+    validation_status: Optional[str]
+    evaluation_status: Optional[str]
 
     # Correction control
     retry_count: int
     replan_count: int
+    step_count: int
     last_error: Optional[dict]
+    resolution_status: Optional[str]
+    error_reason: Optional[str]
 
     # Completion
     goal_complete: bool

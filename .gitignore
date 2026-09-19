@@ -9,6 +9,6 @@ __pycache__/
 
 .vercel
 .env*
-
-.env
-.env.local
+*.pyc
+**/*.pyc
+.langgraph_api/
