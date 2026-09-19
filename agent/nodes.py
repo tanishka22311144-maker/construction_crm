@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib import error, request
 
+from services.audit import load_recent_chat_history, record_chat_session
 from services.authorization import authorize
 from services.database import execute_query
 from services.identity import hash_whatsapp_number
@@ -221,6 +222,18 @@ def load_identity_and_memory(state: dict) -> dict:
             state["user_role"] = user_row.get("role")
             state["user_name"] = user_row.get("display_name")
             _debug_log("load_identity_result", sender_hash=sender_hash, result="matched", role=state.get("user_role"))
+
+            # Stage 4: Load multi-turn conversation history from chat_sessions
+            history = load_recent_chat_history(state["user_id"], sender_hash=sender_hash, limit=6)
+            if history:
+                messages = []
+                for turn in history:
+                    messages.append({"role": "user", "content": turn["user_message"]})
+                    messages.append({"role": "assistant", "content": turn["assistant_reply"]})
+                incoming = state.get("incoming_message") or ""
+                messages.append({"role": "user", "content": incoming})
+                state["messages"] = messages
+                _debug_log("load_memory_history_loaded", turns=len(history))
         else:
             state["user_id"] = None
             _debug_log("load_identity_result", sender_hash=sender_hash, result="not_matched")
@@ -524,10 +537,22 @@ def generate_grounded_response(state: dict) -> dict:
             lines.append(f"  {i}. {date_str} — {title}{amount}")
         grounding = "\n".join(lines)
 
+    # Stage 4: Add recent conversation history if present
+    conversation_context = ""
+    history_messages = state.get("messages") or []
+    if len(history_messages) > 1:
+        prior_turns = []
+        for msg in history_messages[:-1]:
+            role = "User" if msg.get("role") == "user" else "Assistant"
+            prior_turns.append(f"{role}: {msg.get('content')}")
+        if prior_turns:
+            conversation_context = "Recent conversation context:\n" + "\n".join(prior_turns[-4:]) + "\n\n"
+
     synthesis_prompt = (
-        f"User asked (via WhatsApp): \"{incoming}\"\n\n"
+        f"{conversation_context}"
+        f"Current question from user (via WhatsApp): \"{incoming}\"\n\n"
         f"{grounding}\n\n"
-        "Write a brief, friendly WhatsApp reply that answers the user based strictly on the data above. "
+        "Write a brief, friendly WhatsApp reply that answers the user based strictly on the data above and previous conversation. "
         "Do not invent any information not present in the data. Keep it under 5 lines."
     )
 
@@ -573,5 +598,19 @@ def safe_failure(state: dict) -> dict:
 
 def send_whatsapp_response(state: dict) -> dict:
     state.setdefault("final_response", "Hello from the construction CRM bot.")
-    _debug_log("send_whatsapp_response", final_response_preview=state.get("final_response", "")[:180])
+    final_response = state.get("final_response", "")
+
+    # Stage 4: Persist conversation turn to chat_sessions for durable memory
+    user_id = state.get("user_id")
+    incoming = state.get("incoming_message", "")
+    if user_id and incoming and final_response:
+        record_chat_session(
+            user_id=user_id,
+            user_message=incoming,
+            assistant_reply=final_response,
+            run_id=state.get("run_id"),
+            sender_hash=state.get("sender_hash"),
+        )
+
+    _debug_log("send_whatsapp_response", final_response_preview=final_response[:180])
     return state

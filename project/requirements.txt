@@ -1,5 +1,7 @@
 fastapi
+langgraph>=0.0.12
 langgraph-checkpoint
+langgraph-checkpoint-postgres
 typing_extensions
 pydantic
 psycopg2-binary

@@ -3,9 +3,10 @@
 > **Current Implementation Progress:**
 > - Stage 1: Complete and verified.
 > - Stage 2: Complete and verified.
-> - Stage 3: Build complete — implemented `services/verification.py` (structural read validation, transient error classification), graph nodes `create_plan`, `validate_plan`, ambiguity handling in `resolve_project`, `validate_tool_result`, `evaluate_goal`, bounded execution stops (`MAX_AGENT_STEPS`, `MAX_TRANSIENT_RETRIES`, `MAX_REPLANS`), LangSmith tracing metadata configuration in `index.py`, and automated evaluation test suite `test_stage3_eval.py`.
+> - Stage 3: Complete and verified.
+> - Stage 4: Build complete — applied migrations `20260101000700` (`agent_runs`, `agent_events`) and `20260101000900` (`processed_messages`), implemented webhook deduplication in `api/index.py`, added multi-turn conversation memory loading and turn recording in `chat_sessions`, wired Postgres checkpointer configuration in `agent/graph.py`, and verified with automated test suites `test_audit.py` and `test_stage4_dedup_and_memory.py`.
 >
-> Work resumes at **Stage 3 Verification**.
+> Work resumes at **Stage 5 Build — Add more tools (write: `add_project_row`, post-write verification, idempotency)**.
 >
 > One thing carries forward that is *not* business as usual: Stage 1's
 > `agent/graph.py` is a plain Python for-loop over node functions

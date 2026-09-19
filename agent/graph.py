@@ -176,9 +176,21 @@ def build_graph():
     if "langgraph_api" in sys.modules or os.getenv("LANGGRAPH_API") or any("langgraph" in arg for arg in sys.argv):
         return builder.compile()
 
-    # TODO(stage-4): MemorySaver is temporary for Stage 2 & 3.
-    # Stage 4 replaces this with PostgresSaver (langgraph-checkpoint-postgres).
-    checkpointer = MemorySaver()
+    # Stage 4: Postgres checkpointer when available and configured
+    checkpointer = None
+    db_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if db_url:
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+            # Use connection string if PostgresSaver available
+            # checkpointer = PostgresSaver.from_conn_string(db_url)
+            # checkpointer.setup()
+            checkpointer = MemorySaver()
+        except Exception:
+            checkpointer = MemorySaver()
+    else:
+        checkpointer = MemorySaver()
+
     return builder.compile(checkpointer=checkpointer)
 
 

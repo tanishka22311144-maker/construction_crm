@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from agent.graph import graph
+from services.audit import check_and_start_message_dedup, complete_message_dedup
 from services.identity import canonicalize_whatsapp_number, hash_whatsapp_number
 
 app = FastAPI()
@@ -50,6 +51,20 @@ async def receive_webhook(request: Request):
     canonical_sender = canonicalize_whatsapp_number(sender_wa_id) if sender_wa_id else ""
     sender_hash = hash_whatsapp_number(sender_wa_id) if sender_wa_id else ""
 
+    # Stage 4 Deduplication Check (PROJECT_SPEC.md §10 & idempotency skill)
+    if message_id:
+        dedup_result = check_and_start_message_dedup(message_id, sender_hash)
+        if dedup_result.get("is_duplicate"):
+            print(json.dumps({
+                "event": "message_deduplicated",
+                "message_id": message_id,
+                "dedup_status": dedup_result.get("status"),
+            }), flush=True)
+            return JSONResponse({
+                "status": "already_processed",
+                "message_id": message_id,
+            })
+
     # Safe diagnostic logging of sender hash and env status (no secrets or raw phone)
     print(json.dumps({
         "event": "webhook_received",
@@ -85,6 +100,10 @@ async def receive_webhook(request: Request):
         config=langgraph_config,
     )
     final_response = result.get("final_response", "")
+
+    # Mark message deduplication as complete
+    if message_id:
+        complete_message_dedup(message_id, run_id=run_id)
 
     if sender_wa_id:
         _send_whatsapp_reply(sender_wa_id, final_response)
