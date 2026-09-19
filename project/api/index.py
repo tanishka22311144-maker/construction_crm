@@ -60,6 +60,7 @@ async def receive_webhook(request: Request):
         },
     }), flush=True)
 
+    thread_id = f"wa-{sender_hash[:16]}" if sender_hash else f"thread-{uuid.uuid4().hex[:12]}"
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     initial_state = {
         "run_id": run_id,
