@@ -543,8 +543,15 @@ def generate_grounded_response(state: dict) -> dict:
     if len(history_messages) > 1:
         prior_turns = []
         for msg in history_messages[:-1]:
-            role = "User" if msg.get("role") == "user" else "Assistant"
-            prior_turns.append(f"{role}: {msg.get('content')}")
+            if isinstance(msg, dict):
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                content = str(msg.get("content") or "")
+            else:
+                msg_type = getattr(msg, "type", "")
+                role = "User" if msg_type in ("human", "user") or type(msg).__name__ == "HumanMessage" else "Assistant"
+                content = str(getattr(msg, "content", "") or "")
+            if content:
+                prior_turns.append(f"{role}: {content}")
         if prior_turns:
             conversation_context = "Recent conversation context:\n" + "\n".join(prior_turns[-4:]) + "\n\n"
 

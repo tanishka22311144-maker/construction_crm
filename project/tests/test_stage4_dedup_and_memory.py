@@ -81,6 +81,33 @@ class TestStage4DedupAndMemory(unittest.TestCase):
         self.assertEqual(messages[1]["content"], "Metro Line Extension")
         self.assertEqual(messages[2]["content"], "What did I ask earlier?")
 
+    def test_generate_grounded_response_with_langchain_messages(self):
+        from agent.nodes import generate_grounded_response
+
+        # Mock HumanMessage / AIMessage class similar to LangChain's Pydantic models
+        class FakeHumanMessage:
+            type = "human"
+            content = "Which projects are active?"
+
+        class FakeAIMessage:
+            type = "ai"
+            content = "Metro Line Extension is active."
+
+        state = {
+            "messages": [FakeHumanMessage(), FakeAIMessage(), FakeHumanMessage()],
+            "incoming_message": "What did I ask earlier?",
+            "project_name": "Metro Line Extension",
+            "tool_result": {
+                "status": "success",
+                "records": [{"title": "Metro Line Extension", "record_date": "2026-09-01"}],
+            },
+        }
+
+        # Should not raise AttributeError: 'HumanMessage' object has no attribute 'get'
+        res = generate_grounded_response(state)
+        self.assertTrue(res.get("goal_complete"))
+        self.assertIsNotNone(res.get("final_response"))
+
 
 if __name__ == "__main__":
     unittest.main()
