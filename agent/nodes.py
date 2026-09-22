@@ -6,12 +6,23 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib import error, request
 
-from services.audit import load_recent_chat_history, record_chat_session
+from services.audit import (
+    load_recent_chat_history,
+    record_chat_session,
+    record_agent_run,
+    record_agent_event,
+)
 from services.authorization import authorize
 from services.database import execute_query
 from services.identity import hash_whatsapp_number
-from services.verification import validate_read_result, classify_error
+from services.verification import (
+    validate_read_result,
+    validate_write_result,
+    verify_insert,
+    classify_error,
+)
 from tools.read_project_data import read_project_data
+from tools.add_project_row import add_project_row
 
 # Bounded execution limits per PROJECT_SPEC.md §9
 MAX_AGENT_STEPS = 10
@@ -162,7 +173,12 @@ def _call_groq(api_key: str, model: str, user_message: str, system_prompt: Optio
 
 def receive_request(state: dict) -> dict:
     state.setdefault("thread_id", state.get("thread_id") or f"thread-{uuid.uuid4().hex[:12]}")
-    state.setdefault("run_id", f"run-{uuid.uuid4().hex[:12]}")
+    raw_run_id = state.get("run_id")
+    try:
+        run_uuid = str(uuid.UUID(str(raw_run_id)))
+    except (ValueError, TypeError):
+        run_uuid = str(uuid.uuid4())
+    state["run_id"] = run_uuid
     state.setdefault("message_id", state.get("message_id") or f"msg-{uuid.uuid4().hex[:12]}")
     state.setdefault("debug_trace", [])
     state.setdefault("step_count", 0)
@@ -223,6 +239,16 @@ def load_identity_and_memory(state: dict) -> dict:
             state["user_name"] = user_row.get("display_name")
             _debug_log("load_identity_result", sender_hash=sender_hash, result="matched", role=state.get("user_role"))
 
+            # Ensure agent_runs row exists for audit FK references
+            if state.get("run_id"):
+                record_agent_run(
+                    run_id=state["run_id"],
+                    thread_id=state.get("thread_id", ""),
+                    user_id=state["user_id"],
+                    message_id=state.get("message_id") or "",
+                    sender_hash=sender_hash,
+                )
+
             # Stage 4: Load multi-turn conversation history from chat_sessions
             history = load_recent_chat_history(state["user_id"], sender_hash=sender_hash, limit=6)
             if history:
@@ -245,7 +271,7 @@ def load_identity_and_memory(state: dict) -> dict:
 
 
 def understand_request(state: dict) -> dict:
-    """Use LLM to classify intent and extract project reference from the user message."""
+    """Use LLM to select tool and extract arguments directly without regex heuristics."""
     incoming = (state.get("incoming_message") or "").strip()
     instructions = state.get("instructions") or _instructions_text()
 
@@ -267,62 +293,91 @@ def understand_request(state: dict) -> dict:
         if prior_turns:
             conversation_context = "Recent conversation context:\n" + "\n".join(prior_turns[-4:]) + "\n\n"
 
-    classification_prompt = f"""You are classifying a WhatsApp message sent to a construction CRM assistant.
+    classification_prompt = f"""You are the natural language understanding component for a Construction CRM WhatsApp assistant.
 
-{conversation_context}Latest user message: "{incoming}"
+Available Tools:
+1. "read_project_data": Query records (expenses, daily logs, equipment logs) for a project.
+   Arguments:
+   - "record_type": "expense" | "daily_log" | "equipment_log" | null
+   - "limit": integer (default 20)
 
-Using the conversation context if available (e.g. if the user says "Yes", "Sure", "Show me", or refers to an earlier discussed project):
-Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
-- "intent": one of "read", "write", "unsupported"
-- "record_type": one of "expense", "daily_log", "equipment_log", or null if not specified
-- "project_name": the project name or code mentioned or implied from conversation, or null if none
+2. "add_project_row": Record an expense, daily log, or equipment log for a project.
+   Arguments:
+   - "record_type": "expense" | "daily_log" | "equipment_log"
+   - "title": short summary of the entry (e.g. "Fuel", "Cement bags", "Excavator inspection")
+   - "amount": numeric cost or quantity (e.g. 2500, 10) or null
+   - "unit": currency or unit (e.g. "INR", "USD", "hours", "bags")
+   - "record_date": YYYY-MM-DD or null
+   - "data": additional key-value details (e.g. {{"category": "Fuel"}})
 
-Example: {{"intent": "read", "record_type": "expense", "project_name": "Metro Line Extension"}}"""
+{conversation_context}User message: "{incoming}"
+
+Decide which tool to use and extract arguments directly.
+Respond with ONLY a valid JSON object (no explanation, no markdown tags outside json):
+{{
+  "intent": "read" | "write" | "unsupported",
+  "selected_tool": "read_project_data" | "add_project_row" | null,
+  "project_name": "name of project mentioned or implied, or null",
+  "tool_arguments": {{ ... }}
+}}"""
 
     llm_response = _get_llm_reply(classification_prompt, system_prompt=instructions)
 
-    # Try to parse LLM output as JSON
     intent = "read"
-    record_type = None
+    selected_tool = "read_project_data"
     extracted_name = None
+    tool_arguments = {}
 
     try:
-        # Strip markdown fences if present
-        cleaned = llm_response.strip().strip("```json").strip("```").strip()
+        cleaned = llm_response.strip()
+        if "```" in cleaned:
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+            if match:
+                cleaned = match.group(1).strip()
+            else:
+                cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
         parsed = json.loads(cleaned)
-        intent = parsed.get("intent", "read")
-        record_type = parsed.get("record_type")
+        intent = parsed.get("intent") or ("write" if parsed.get("selected_tool") == "add_project_row" else "read")
+        selected_tool = parsed.get("selected_tool")
         extracted_name = parsed.get("project_name")
-        _debug_log("understand_request_llm", intent=intent, record_type=record_type, project_name=extracted_name)
-    except (json.JSONDecodeError, AttributeError):
-        # Fallback: keyword regex + follow-up detection
+        tool_arguments = parsed.get("tool_arguments") or {}
+
+        if not selected_tool:
+            if intent == "read":
+                selected_tool = "read_project_data"
+            elif intent == "write":
+                selected_tool = "add_project_row"
+
+        _debug_log("understand_request_llm", intent=intent, selected_tool=selected_tool, project_name=extracted_name, tool_arguments=tool_arguments)
+    except Exception as exc:
+        _debug_log("understand_request_parse_error", error=str(exc), raw_preview=llm_response[:160])
+        # Graceful fallback for offline testing or unconfigured LLM
         lower = incoming.lower().strip()
-        if "expense" in lower or "cost" in lower or "spent" in lower:
-            record_type = "expense"
-        elif "daily log" in lower or "site log" in lower:
-            record_type = "daily_log"
-        elif "equipment" in lower or "machinery" in lower:
-            record_type = "equipment_log"
-
-        # Check for explicit project mention
-        m = re.search(r'(?:for|in|project)\s+([A-Za-z0-9_\-\s]+)', incoming, re.IGNORECASE)
-        if m:
-            extracted_name = re.sub(r'[\?\.\!].*$', '', m.group(1)).strip()
-        elif lower in ("yes", "sure", "yep", "details", "more", "please", "ok", "okay"):
-            # Follow-up affirmative: infer read intent from previous turn
+        if any(w in lower for w in ("add", "insert", "log", "record", "spend", "bought", "purchase")):
+            intent = "write"
+            selected_tool = "add_project_row"
+            rec_type = "expense" if ("expense" in lower or "fuel" in lower or "cost" in lower) else ("equipment_log" if "equipment" in lower else "daily_log")
+            tool_arguments = {"record_type": rec_type, "title": "Entry"}
+        elif any(w in lower for w in ("show", "what", "which", "list", "get", "query", "find", "view")):
             intent = "read"
-
-        _debug_log("understand_request_fallback", intent=intent, record_type=record_type, project_name=extracted_name)
+            selected_tool = "read_project_data"
+            rec_type = "expense" if "expense" in lower else ("daily_log" if "daily" in lower else None)
+            tool_arguments = {"record_type": rec_type, "limit": 20}
+        else:
+            intent = "read"
+            selected_tool = "read_project_data"
+            tool_arguments = {"limit": 20}
 
     state["intent"] = intent
-    state["selected_tool"] = "read_project_data" if intent == "read" else None
+    state["selected_tool"] = selected_tool
     state["project_name"] = extracted_name
-    state["tool_arguments"] = {"record_type": record_type, "limit": 20}
+    state["tool_arguments"] = tool_arguments
     return state
 
 
 def create_plan(state: dict) -> dict:
-    """Stage 3: Break request into explicit operational steps."""
+    """Break request into explicit operational steps."""
     intent = state.get("intent", "read")
     selected_tool = state.get("selected_tool")
 
@@ -333,6 +388,14 @@ def create_plan(state: dict) -> dict:
             {"step": 3, "action": "read_project_data"},
             {"step": 4, "action": "evaluate_goal"},
         ]
+    elif intent == "write" and selected_tool == "add_project_row":
+        plan = [
+            {"step": 1, "action": "resolve_project"},
+            {"step": 2, "action": "check_permission"},
+            {"step": 3, "action": "add_project_row"},
+            {"step": 4, "action": "verify_operation"},
+            {"step": 5, "action": "evaluate_goal"},
+        ]
     else:
         plan = [
             {"step": 1, "action": "unsupported"},
@@ -340,15 +403,22 @@ def create_plan(state: dict) -> dict:
 
     state["plan"] = plan
     state["current_step"] = 1
-    state["requested_outcome"] = f"Query {state.get('tool_arguments', {}).get('record_type') or 'records'} for {state.get('project_name') or 'project'}"
+    state["requested_outcome"] = f"{selected_tool or intent} for {state.get('project_name') or 'project'}"
     _debug_log("create_plan", plan=plan, replan_count=state.get("replan_count", 0))
     return state
 
 
 def validate_plan(state: dict) -> dict:
-    """Stage 3: Validate plan actions against allowed operations and bounded limits."""
+    """Validate plan actions against allowed operations and bounded limits."""
     plan = state.get("plan") or []
-    allowed_actions = {"resolve_project", "check_permission", "read_project_data", "evaluate_goal"}
+    allowed_actions = {
+        "resolve_project",
+        "check_permission",
+        "read_project_data",
+        "add_project_row",
+        "verify_operation",
+        "evaluate_goal",
+    }
 
     if not plan:
         state["plan_valid"] = False
@@ -360,8 +430,8 @@ def validate_plan(state: dict) -> dict:
         action = step.get("action")
         if action not in allowed_actions:
             state["plan_valid"] = False
-            state["error_reason"] = f"Operation '{action}' is unsupported. In Stage 3, only reading project records is supported."
-            state["final_response"] = "I can only help query project records (expenses, daily logs, equipment logs) at this time. Other operations are not supported yet."
+            state["error_reason"] = f"Operation '{action}' is unsupported."
+            state["final_response"] = "I can only help query or add project records (expenses, daily logs, equipment logs) at this time. Other operations are not supported yet."
             _debug_log("validate_plan_unsupported_action", action=action)
             return state
 
@@ -448,33 +518,59 @@ def check_permission(state: dict) -> dict:
 
 
 def execute_tool(state: dict) -> dict:
-    """Execute read_project_data tool inside bound session context."""
+    """Execute selected tool inside bound session context."""
     project_id = state.get("project_id")
     user_id = state.get("user_id")
+    sender_hash = state.get("sender_hash")
+    message_id = state.get("message_id")
+    selected_tool = state.get("selected_tool")
     tool_args = state.get("tool_arguments", {})
-    record_type = tool_args.get("record_type")
-    limit = tool_args.get("limit", 20)
 
-    result = read_project_data(
-        project_id=project_id,
-        record_type=record_type,
-        limit=limit,
-        user_id=user_id,
-    )
+    if selected_tool == "add_project_row":
+        result = add_project_row(
+            project_id=project_id,
+            record_type=tool_args.get("record_type") or "expense",
+            record_date=tool_args.get("record_date"),
+            title=tool_args.get("title"),
+            description=tool_args.get("description"),
+            amount=tool_args.get("amount"),
+            unit=tool_args.get("unit") or "INR",
+            data=tool_args.get("data"),
+            message_id=message_id,
+            user_id=user_id,
+            sender_hash=sender_hash,
+        )
+    else:
+        # Default to read_project_data
+        record_type = tool_args.get("record_type")
+        limit = tool_args.get("limit", 20)
+        result = read_project_data(
+            project_id=project_id,
+            record_type=record_type,
+            limit=limit,
+            user_id=user_id,
+        )
+
     state["tool_result"] = result
-    _debug_log("execute_tool", status=result.get("status"), count=result.get("count"))
+    _debug_log("execute_tool", tool=selected_tool, status=result.get("status") or result.get("success"))
     return state
 
 
 def validate_tool_result(state: dict) -> dict:
-    """Stage 3: Structural verification of tool result and transient retry classification."""
+    """Layer 5: Structural verification of tool result and transient retry classification."""
     tool_result = state.get("tool_result") or {}
-    verification = validate_read_result(tool_result)
+    selected_tool = state.get("selected_tool")
+
+    if selected_tool == "add_project_row":
+        verification = validate_write_result(tool_result)
+    else:
+        verification = validate_read_result(tool_result)
+
     state["verification_result"] = verification
 
     if verification["valid"]:
         state["validation_status"] = "valid"
-        _debug_log("validate_tool_result_passed", row_count=verification.get("row_count"))
+        _debug_log("validate_tool_result_passed", tool=selected_tool)
         return state
 
     # Failure handling
@@ -493,19 +589,82 @@ def validate_tool_result(state: dict) -> dict:
             return state
         else:
             state["validation_status"] = "failed"
-            state["final_response"] = f"The database query timed out after {MAX_TRANSIENT_RETRIES} attempts. Please try again in a few moments."
+            state["final_response"] = f"The operation timed out after {MAX_TRANSIENT_RETRIES} attempts. Please try again in a few moments."
             _debug_log("validate_tool_result_max_retries_exceeded")
             return state
 
     # Fatal / non-retryable error
     state["validation_status"] = "failed"
-    state["final_response"] = f"Query failed: {verification.get('error')}"
+    state["final_response"] = f"Operation failed: {verification.get('error')}"
     _debug_log("validate_tool_result_fatal", code=verification.get("code"))
     return state
 
 
+def verify_operation(state: dict) -> dict:
+    """Layer 6: Post-write read-back verification and permanent event logging."""
+    selected_tool = state.get("selected_tool")
+    tool_result = state.get("tool_result") or {}
+    tool_args = state.get("tool_arguments") or {}
+    project_id = state.get("project_id")
+    user_id = state.get("user_id")
+    run_id = state.get("run_id")
+    sender_hash = state.get("sender_hash")
+
+    # For read operations, Layer 6 read-back is a no-op
+    if selected_tool != "add_project_row":
+        state["validation_status"] = "valid"
+        return state
+
+    read_back = verify_insert(
+        project_id=project_id,
+        expected=tool_args,
+        write_result=tool_result,
+        user_id=user_id,
+    )
+    state["read_back_result"] = read_back
+
+    if read_back.get("success"):
+        state["verified_record"] = read_back.get("verified_record")
+        state["validation_status"] = "valid"
+        _debug_log("verify_operation_passed", record_id=tool_result.get("record_id"))
+
+        # Log VERIFICATION_PASSED event in agent_events
+        record_agent_event(
+            run_id=run_id,
+            sequence_number=1,
+            event_type="VERIFICATION_PASSED",
+            status="completed",
+            node_name="verify_operation",
+            tool_name=selected_tool,
+            input_json=tool_args,
+            output_json=read_back.get("verified_record"),
+            user_id=user_id,
+            sender_hash=sender_hash,
+        )
+        return state
+
+    # Verification failed (e.g. read-back mismatch or record missing)
+    state["validation_status"] = "failed"
+    state["final_response"] = f"Write verification failed: {read_back.get('error')}"
+    _debug_log("verify_operation_failed", code=read_back.get("code"), error=read_back.get("error"))
+
+    record_agent_event(
+        run_id=run_id,
+        sequence_number=1,
+        event_type="VERIFICATION_FAILED",
+        status="failed",
+        node_name="verify_operation",
+        tool_name=selected_tool,
+        input_json=tool_args,
+        error_json={"code": read_back.get("code"), "error": read_back.get("error"), "details": read_back.get("details")},
+        user_id=user_id,
+        sender_hash=sender_hash,
+    )
+    return state
+
+
 def evaluate_goal(state: dict) -> dict:
-    """Stage 3: Verify if the requested goal is fulfilled, or if replanning is needed."""
+    """Stage 3/5: Verify if the requested goal is fulfilled, or if replanning is needed."""
     # Increment execution step count
     step_count = state.get("step_count", 0) + 1
     state["step_count"] = step_count
@@ -518,7 +677,8 @@ def evaluate_goal(state: dict) -> dict:
         return state
 
     verification = state.get("verification_result") or {}
-    if verification.get("valid"):
+    validation_status = state.get("validation_status")
+    if verification.get("valid") and validation_status == "valid":
         state["goal_complete"] = True
         state["evaluation_status"] = "complete"
         _debug_log("evaluate_goal_complete")
@@ -540,12 +700,29 @@ def evaluate_goal(state: dict) -> dict:
 
 def generate_grounded_response(state: dict) -> dict:
     """Pass real DB records to the LLM and produce a grounded natural-language reply."""
-    tool_result = state.get("tool_result", {})
-    records = tool_result.get("records", [])
+    selected_tool = state.get("selected_tool")
     project_name = state.get("project_name") or "the project"
-    record_type = state.get("tool_arguments", {}).get("record_type") or "records"
     incoming = state.get("incoming_message", "")
     instructions = state.get("instructions") or _instructions_text()
+
+    if selected_tool == "add_project_row":
+        verified = state.get("verified_record") or {}
+        rec_type = verified.get("record_type") or "record"
+        title = verified.get("title") or "Item"
+        amount = verified.get("amount")
+        unit = verified.get("unit") or "INR"
+        rec_date = verified.get("record_date") or ""
+
+        amt_str = f" of {amount} {unit}" if amount is not None else ""
+        date_str = f" on {rec_date}" if rec_date else ""
+        state["final_response"] = f"Successfully recorded {title} ({rec_type}){amt_str} for project '{project_name}'{date_str}."
+        state["goal_complete"] = True
+        _debug_log("generate_grounded_response_write", response=state["final_response"])
+        return state
+
+    tool_result = state.get("tool_result", {})
+    records = tool_result.get("records", [])
+    record_type = state.get("tool_arguments", {}).get("record_type") or "records"
 
     if not records:
         # No data — still ask the LLM to phrase this naturally

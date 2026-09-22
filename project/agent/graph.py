@@ -18,6 +18,7 @@ from agent.nodes import (
     understand_request,
     validate_plan,
     validate_tool_result,
+    verify_operation,
 )
 from agent.state import AgentState
 
@@ -86,6 +87,7 @@ def build_graph():
     builder.add_node("check_permission", check_permission)
     builder.add_node("execute_tool", execute_tool)
     builder.add_node("validate_tool_result", validate_tool_result)
+    builder.add_node("verify_operation", verify_operation)
     builder.add_node("evaluate_goal", evaluate_goal)
     builder.add_node("generate_grounded_response", generate_grounded_response)
     builder.add_node("safe_failure", safe_failure)
@@ -142,12 +144,23 @@ def build_graph():
         },
     )
 
-    # Tool execution -> tool result verification
+    # Tool execution -> tool result verification (Layer 5)
     builder.add_edge("execute_tool", "validate_tool_result")
 
-    # Tool result validation edge (valid -> evaluate_goal, retry -> execute_tool, failed -> safe_failure)
+    # Tool result validation edge (valid -> verify_operation, retry -> execute_tool, failed -> safe_failure)
     builder.add_conditional_edges(
         "validate_tool_result",
+        route_tool_result,
+        {
+            "valid": "verify_operation",
+            "retry": "execute_tool",
+            "failed": "safe_failure",
+        },
+    )
+
+    # Layer 6 post-write verification edge (valid -> evaluate_goal, failed -> safe_failure)
+    builder.add_conditional_edges(
+        "verify_operation",
         route_tool_result,
         {
             "valid": "evaluate_goal",

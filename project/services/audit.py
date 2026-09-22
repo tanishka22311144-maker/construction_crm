@@ -80,6 +80,129 @@ def complete_message_dedup(message_id: str, run_id: Optional[str] = None) -> Non
 
 # --- Durable Agent Runs & Audit Events (PROJECT_SPEC.md §15) ---
 
+def record_agent_run(
+    run_id: str,
+    thread_id: str,
+    user_id: Optional[str],
+    message_id: str,
+    intent: Optional[str] = None,
+    current_node: Optional[str] = None,
+    status: str = "running",
+    sender_hash: Optional[str] = None,
+) -> None:
+    """Ensure agent_runs row exists for foreign key references."""
+    if not run_id:
+        return
+    try:
+        run_uuid = str(uuid.UUID(run_id))
+    except (ValueError, TypeError):
+        return
+
+    sql = """
+        INSERT INTO public.agent_runs (id, thread_id, user_id, message_id, status, intent, current_node)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE
+        SET status = EXCLUDED.status,
+            current_node = EXCLUDED.current_node,
+            intent = COALESCE(EXCLUDED.intent, agent_runs.intent);
+    """
+    try:
+        user_uuid = None
+        if user_id:
+            try:
+                user_uuid = str(uuid.UUID(user_id))
+            except ValueError:
+                user_uuid = None
+        execute_query(
+            sql,
+            (run_uuid, thread_id or "", user_uuid, message_id or "", status, intent, current_node),
+            sender_hash=sender_hash,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        print(json.dumps({"event": "record_agent_run_error", "error": str(exc)}), flush=True)
+
+
+def record_agent_event(
+    run_id: str,
+    sequence_number: int,
+    event_type: str,
+    status: Optional[str] = None,
+    node_name: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    input_json: Optional[dict] = None,
+    output_json: Optional[dict] = None,
+    decision_json: Optional[dict] = None,
+    error_json: Optional[dict] = None,
+    duration_ms: Optional[int] = None,
+    user_id: Optional[str] = None,
+    sender_hash: Optional[str] = None,
+) -> None:
+    """Append durable audit event to public.agent_events table."""
+    if not run_id:
+        return
+    try:
+        run_uuid = str(uuid.UUID(run_id))
+    except (ValueError, TypeError):
+        return
+
+    sql = """
+        INSERT INTO public.agent_events (
+            run_id, sequence_number, event_type, status, node_name,
+            tool_name, input_json, output_json, decision_json, error_json, duration_ms
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (run_id, sequence_number) DO NOTHING;
+    """
+    try:
+        execute_query(
+            sql,
+            (
+                run_uuid,
+                sequence_number,
+                event_type,
+                status,
+                node_name,
+                tool_name,
+                json.dumps(input_json, default=str) if input_json is not None else None,
+                json.dumps(output_json, default=str) if output_json is not None else None,
+                json.dumps(decision_json, default=str) if decision_json is not None else None,
+                json.dumps(error_json, default=str) if error_json is not None else None,
+                duration_ms,
+            ),
+            sender_hash=sender_hash,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        print(json.dumps({"event": "record_agent_event_error", "error": str(exc)}), flush=True)
+
+
+def check_write_idempotency(
+    idempotency_key: str,
+    project_id: str,
+    user_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Check if a project record with this idempotency key was already created."""
+    if not idempotency_key or not project_id:
+        return None
+
+    sql = """
+        SELECT id, project_id, record_type, record_date, title, description, amount, unit, data, created_at
+        FROM public.project_records
+        WHERE project_id = %s
+          AND data->>'idempotency_key' = %s
+        LIMIT 1;
+    """
+    try:
+        rows = execute_query(sql, (project_id, idempotency_key), user_id=user_id)
+        if rows:
+            return rows[0]
+        return None
+    except Exception as exc:
+        print(json.dumps({"event": "check_write_idempotency_error", "error": str(exc)}), flush=True)
+        return None
+
+
 def record_chat_session(
     user_id: Optional[str],
     user_message: str,

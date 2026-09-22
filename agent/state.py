@@ -16,6 +16,7 @@ class AgentState(TypedDict, total=False):
     thread_id: str
     user_id: str
     sender_hash: str
+    sender_wa_id: Optional[str]
     message_id: str
 
     # Conversation
@@ -58,6 +59,10 @@ class AgentState(TypedDict, total=False):
     last_error: Optional[dict]
     resolution_status: Optional[str]
     error_reason: Optional[str]
+
+    # Post-write read-back verification
+    verified_record: Optional[dict]
+    read_back_result: Optional[dict]
 
     # Completion
     goal_complete: bool
