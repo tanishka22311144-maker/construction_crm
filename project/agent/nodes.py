@@ -729,7 +729,9 @@ def classify_risk_node(state: dict) -> dict:
         )
 
         # Notify approver via WhatsApp if approver phone number is configured
-        approver_wa_id = os.getenv("APPROVER_WHATSAPP_NUMBER") or os.getenv("ADMIN_PHONE_NUMBER")
+        approver_raw = os.getenv("APPROVER_WHATSAPP_NUMBER") or os.getenv("ADMIN_PHONE_NUMBER") or "918698510857"
+        from services.identity import canonicalize_whatsapp_number
+        approver_wa_id = canonicalize_whatsapp_number(approver_raw) if approver_raw else ""
         if approver_wa_id and formatted_msg:
             try:
                 from services.whatsapp import send_whatsapp_message
