@@ -274,7 +274,13 @@ def _send_whatsapp_reply(to_wa_id: str, text: str) -> None:
         with urlrequest.urlopen(req, timeout=15) as response:
             print(json.dumps({"event": "send_whatsapp_reply_ok", "status": response.status}))
     except Exception as exc:  # pragma: no cover - runtime safeguard
-        print(json.dumps({"event": "send_whatsapp_reply_failed", "error": str(exc)}))
+        err_detail = str(exc)
+        if hasattr(exc, "read"):
+            try:
+                err_detail = f"{str(exc)}: {exc.read().decode('utf-8', errors='replace')}"
+            except Exception:
+                pass
+        print(json.dumps({"event": "send_whatsapp_reply_failed", "error": err_detail}))
 
 
 # --- Debug / health endpoints (non-production) ---

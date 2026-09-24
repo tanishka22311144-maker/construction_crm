@@ -42,11 +42,11 @@ def create_project(
                 # 1. Insert Project
                 cur.execute(
                     """
-                    INSERT INTO public.projects (project_name, project_code, location, status)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO public.projects (project_name, project_code, location, status, created_by)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING id, project_name, project_code, location, status, created_at;
                     """,
-                    (name, code, location, status),
+                    (name, code, location, status, user_id),
                 )
                 project_row = cur.fetchone()
                 project_id = str(project_row["id"])
@@ -67,7 +67,7 @@ def create_project(
                             project_id, record_type, field_name, field_type, required, validation_rules, created_by
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (project_id, record_type, field_name) DO NOTHING;
+                        ON CONFLICT DO NOTHING;
                         """,
                         (p_id, rec_type, f_name, f_type, req, v_rules, user_id),
                     )
