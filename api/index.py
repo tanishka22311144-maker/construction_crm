@@ -75,13 +75,29 @@ async def receive_webhook(request: Request):
         },
     }), flush=True)
 
-    # Check if this incoming message is an approval reply (e.g. APPROVE APR-XXXX, REJECT APR-XXXX <reason>, EDIT APR-XXXX <changes>)
-    from services.approvals import parse_approval_reply, validate_and_process_approval
+    # Check if this incoming message is an approval reply (e.g. APPROVE APR-XXXX, REJECT APR-XXXX <reason>, EDIT APR-XXXX <changes>, or shorthand "approve" / "reject")
+    from services.approvals import parse_approval_reply, validate_and_process_approval, find_latest_pending_approval_code
     approval_reply = parse_approval_reply(incoming_text)
     if approval_reply:
         approval_code = approval_reply["approval_code"]
         action = approval_reply["action"]
         extra_text = approval_reply["extra_text"]
+
+        # If approval_code was omitted (e.g. user typed just "approve"), infer it from recent AI reply or pending_approvals
+        if not approval_code:
+            approval_code = find_latest_pending_approval_code(sender_hash=sender_hash)
+
+        if not approval_code:
+            err_msg = f"No pending approval request found to {action.lower()}. Please include the approval code (e.g. APPROVE APR-XXXX)."
+            if sender_wa_id:
+                _send_whatsapp_reply(sender_wa_id, err_msg)
+            if message_id:
+                complete_message_dedup(message_id, run_id="appr-not-found")
+            return JSONResponse({
+                "status": "approval_rejected",
+                "reason": "no_pending_approval",
+                "details": f"Could not find any pending approval to {action.lower()}",
+            })
 
         # Run 5-point deterministic verification checklist
         approval_res = validate_and_process_approval(

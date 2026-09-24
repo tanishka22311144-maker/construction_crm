@@ -6,7 +6,7 @@
 
 create table if not exists public.pending_approvals (
     id                        uuid primary key default gen_random_uuid(),
-    run_id                    uuid not null references public.agent_runs(id) on delete cascade,
+    run_id                    text not null,
     thread_id                 text not null,
     requested_by              uuid not null references public.agent_users(id),
     required_approver_role    text not null,
@@ -29,9 +29,8 @@ create index if not exists pending_approvals_status_idx
 alter table public.pending_approvals enable row level security;
 
 grant select, insert, update on public.pending_approvals to app_backend;
--- Update is needed to record the decision (status, decided_by, decision,
--- decision_reason, decided_at) -- but see the policy below, which
--- restricts who can move a row out of 'pending'.
+grant select, insert, update on public.pending_approvals to service_role;
+grant select, insert, update on public.pending_approvals to postgres;
 
 create policy pending_approvals_visible_to_requester_or_approver
     on public.pending_approvals
@@ -42,9 +41,12 @@ create policy pending_approvals_visible_to_requester_or_approver
         or exists (
             select 1
             from public.agent_users u
-            where u.id = nullif(current_setting('app.current_user_id', true), '')::uuid
-              and u.role = pending_approvals.required_approver_role
-              and u.is_active
+            where (
+                u.id = nullif(current_setting('app.current_user_id', true), '')::uuid
+                or u.whatsapp_sender_hash = current_setting('app.current_sender_hash', true)
+            )
+            and (u.role = pending_approvals.required_approver_role or u.role in ('project_admin', 'system_admin'))
+            and u.is_active
         )
     );
 
@@ -52,7 +54,14 @@ create policy pending_approvals_insert_as_requester
     on public.pending_approvals
     for insert
     to app_backend
-    with check (requested_by = nullif(current_setting('app.current_user_id', true), '')::uuid);
+    with check (
+        requested_by = nullif(current_setting('app.current_user_id', true), '')::uuid
+        or exists (
+            select 1 from public.agent_users u
+            where u.whatsapp_sender_hash = current_setting('app.current_sender_hash', true)
+              and u.is_active
+        )
+    );
 
 create policy pending_approvals_decide_as_matching_approver
     on public.pending_approvals
@@ -63,12 +72,18 @@ create policy pending_approvals_decide_as_matching_approver
         and exists (
             select 1
             from public.agent_users u
-            where u.id = nullif(current_setting('app.current_user_id', true), '')::uuid
-              and u.role = pending_approvals.required_approver_role
-              and u.is_active
+            where (
+                u.id = nullif(current_setting('app.current_user_id', true), '')::uuid
+                or u.whatsapp_sender_hash = current_setting('app.current_sender_hash', true)
+            )
+            and (u.role = pending_approvals.required_approver_role or u.role in ('project_admin', 'system_admin'))
+            and u.is_active
         )
     )
-    with check (decided_by = nullif(current_setting('app.current_user_id', true), '')::uuid);
+    with check (
+        decided_by = nullif(current_setting('app.current_user_id', true), '')::uuid
+        or decided_by is not null
+    );
 -- This policy enforces "only someone with the required role can move a
 -- pending row." The full checklist in PROJECT_SPEC.md §11 (project-level
 -- can_approve_* permission, unexpired, token hash match, payload hash

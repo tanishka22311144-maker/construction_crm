@@ -474,6 +474,76 @@ class TestStage6ApprovalFlow(unittest.TestCase):
         # Confirm approver got acknowledgement
         mock_send_reply.assert_any_call("15559998888", "Approval APR-777777 processed: approve.")
 
+    @patch("api.index._send_whatsapp_reply")
+    @patch("services.approvals.find_latest_pending_approval_code")
+    @patch("services.approvals.validate_and_process_approval")
+    @patch("agent.graph.graph.invoke")
+    def test_webhook_approval_shorthand_word_approve(
+        self, mock_invoke, mock_validate, mock_find_code, mock_send_reply
+    ):
+        """User can approve by just sending the single word 'approve' without request number."""
+        from fastapi.testclient import TestClient
+        from api.index import app
+
+        client = TestClient(app)
+
+        # Inferred code from recent AI reply / pending_approvals
+        mock_find_code.return_value = "APR-INFERRED"
+
+        mock_validate.return_value = {
+            "valid": True,
+            "status": "approved",
+            "decision": "approve",
+            "decision_reason": "Approved by project admin",
+            "approval_id": "88888888-8888-8888-8888-888888888888",
+            "thread_id": "wa-requester-thread",
+            "operation": "create_project_field",
+            "payload": {"field_name": "soil_density"},
+            "requested_by": "user-requester-1",
+        }
+
+        mock_invoke.return_value = {
+            "final_response": "Successfully defined new custom field 'soil_density' (numeric) for daily_log in project 'Pipeline Alpha'.",
+            "goal_complete": True,
+            "sender_wa_id": "15551112222",
+        }
+
+        # Approver sends JUST the single word "approve"
+        approver_payload = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "messages": [
+                                    {
+                                        "id": "wamid.approval_shorthand_1",
+                                        "from": "15559998888",
+                                        "text": {"body": "approve"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        resp = client.post("/api/index", json=approver_payload)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["approval_code"], "APR-INFERRED")
+        self.assertEqual(data["decision"], "approve")
+
+        mock_find_code.assert_called_once()
+        mock_validate.assert_called_once_with(
+            approval_code="APR-INFERRED",
+            approver_sender_hash="63f4a0fd7676874733d2cc6e18df1e9a06a6f25f9944541e2b15a8d51c3c4a15",
+            action="APPROVE",
+            extra_text="",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

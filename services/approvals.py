@@ -72,26 +72,104 @@ def format_approval_request_message(
 def parse_approval_reply(message_text: str) -> Optional[dict[str, Any]]:
     """Parse incoming approval reply message:
     APPROVE APR-XXXX
+    APPROVE / APPROVED / YES (infers APR code from context)
     REJECT APR-XXXX <reason>
+    REJECT / REJECTED / NO <reason> (infers APR code from context)
     EDIT APR-XXXX <changes>
+    EDIT <changes> (infers APR code from context)
     """
     if not message_text:
         return None
 
     clean = message_text.strip()
-    match = re.match(r"^(APPROVE|REJECT|EDIT)\s+([A-Za-z0-9\-_]+)(?:\s+([\s\S]*))?$", clean, re.IGNORECASE)
-    if not match:
-        return None
 
-    action = match.group(1).upper()
-    code = match.group(2).strip().upper()
-    extra = (match.group(3) or "").strip()
+    # 1. Match explicit code: (APPROVE|REJECT|EDIT) (APR-XXXX) [extra...]
+    match_code = re.match(
+        r"^(APPROVE|APPROVED|REJECT|REJECTED|EDIT)\s+(APR-[A-Za-z0-9\-_]+)(?:\s+([\s\S]*))?$",
+        clean,
+        re.IGNORECASE,
+    )
+    if match_code:
+        raw_act = match_code.group(1).upper()
+        act = "APPROVE" if raw_act in ("APPROVE", "APPROVED") else ("REJECT" if raw_act in ("REJECT", "REJECTED") else "EDIT")
+        code = match_code.group(2).strip().upper()
+        extra = (match_code.group(3) or "").strip()
+        return {
+            "action": act,
+            "approval_code": code,
+            "extra_text": extra,
+        }
 
-    return {
-        "action": action,
-        "approval_code": code,
-        "extra_text": extra,
-    }
+    # 2. Match single word or shorthand action without code: "APPROVE", "approve", "yes", "reject <reason>", etc.
+    match_short = re.match(
+        r"^(APPROVE|APPROVED|YES|REJECT|REJECTED|NO|EDIT)(?:\s+([\s\S]*))?$",
+        clean,
+        re.IGNORECASE,
+    )
+    if match_short:
+        raw_act = match_short.group(1).upper()
+        act = "APPROVE" if raw_act in ("APPROVE", "APPROVED", "YES") else ("REJECT" if raw_act in ("REJECT", "REJECTED", "NO") else "EDIT")
+        extra = (match_short.group(2) or "").strip()
+        return {
+            "action": act,
+            "approval_code": "",
+            "extra_text": extra,
+        }
+
+    return None
+
+
+def find_latest_pending_approval_code(
+    user_id: Optional[str] = None,
+    sender_hash: Optional[str] = None,
+) -> Optional[str]:
+    """Find the approval code for a single word reply like 'approve' or 'reject'.
+
+    1. Checks recent assistant replies in chat_sessions for 'APR-XXXXXX'.
+    2. Checks public.pending_approvals for the most recent pending approval.
+    """
+    # 1. Check recent chat_sessions for APR-XXXXXX pattern in AI reply
+    try:
+        sql_chat = """
+            SELECT assistant_reply
+            FROM public.chat_sessions
+            WHERE (user_id = %s OR sender_hash = %s)
+            ORDER BY created_at DESC
+            LIMIT 5;
+        """
+        rows = execute_query(sql_chat, (user_id, sender_hash), user_id=user_id, sender_hash=sender_hash)
+        for r in rows:
+            reply = r.get("assistant_reply") or ""
+            m = re.search(r"APR-([A-Za-z0-9\-_]+)", reply, re.IGNORECASE)
+            if m:
+                code = f"APR-{m.group(1).upper()}"
+                rec = lookup_pending_approval_by_code(code, user_id=user_id, sender_hash=sender_hash)
+                if rec and rec.get("status") == "pending":
+                    return code
+    except Exception:
+        pass
+
+    # 2. Query pending_approvals directly for latest pending row
+    try:
+        sql_pending = """
+            SELECT proposed_payload->>'approval_code' AS code, id
+            FROM public.pending_approvals
+            WHERE status = 'pending'
+            ORDER BY requested_at DESC
+            LIMIT 1;
+        """
+        rows = execute_query(sql_pending, (), user_id=user_id, sender_hash=sender_hash)
+        if rows:
+            code = rows[0].get("code")
+            if code:
+                return code.strip().upper()
+            row_id = str(rows[0].get("id", ""))
+            if row_id:
+                return f"APR-{row_id.replace('-', '')[:6].upper()}"
+    except Exception:
+        pass
+
+    return None
 
 
 def find_project_approver(
@@ -217,7 +295,11 @@ def create_pending_approval(
     }
 
 
-def lookup_pending_approval_by_code(approval_code: str) -> Optional[dict[str, Any]]:
+def lookup_pending_approval_by_code(
+    approval_code: str,
+    user_id: Optional[str] = None,
+    sender_hash: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
     """Look up a pending_approvals record by code APR-XXXX or UUID prefix."""
     if not approval_code:
         return None
@@ -235,7 +317,7 @@ def lookup_pending_approval_by_code(approval_code: str) -> Optional[dict[str, An
         ORDER BY requested_at DESC
         LIMIT 1;
     """
-    rows = execute_query(sql, (clean_code, f"{hex_part}%"))
+    rows = execute_query(sql, (clean_code, f"{hex_part}%"), user_id=user_id, sender_hash=sender_hash)
     if rows:
         return rows[0]
     return None
@@ -284,7 +366,7 @@ def validate_and_process_approval(
     approver_role = approver.get("role", "")
 
     # 3. Message references a valid, unexpired approval_id with status = pending
-    record = lookup_pending_approval_by_code(approval_code)
+    record = lookup_pending_approval_by_code(approval_code, user_id=approver_id, sender_hash=approver_sender_hash)
     if not record:
         return {
             "valid": False,
@@ -480,6 +562,10 @@ def _update_approval_status(
         WHERE id = %s;
     """
     try:
-        execute_query(sql, (status, decided_by, decision, reason, decided_at.isoformat(), approval_id))
+        execute_query(
+            sql,
+            (status, decided_by, decision, reason, decided_at.isoformat(), approval_id),
+            user_id=decided_by,
+        )
     except Exception as exc:
         print(json.dumps({"event": "update_approval_status_error", "error": str(exc)}), flush=True)
