@@ -544,6 +544,101 @@ class TestStage6ApprovalFlow(unittest.TestCase):
             extra_text="",
         )
 
+    @patch("services.whatsapp.send_whatsapp_message")
+    @patch("tools.create_project.get_db_connection")
+    @patch("services.database.execute_query")
+    @patch("services.approvals.execute_query")
+    @patch("services.audit.execute_query")
+    @patch("services.authorization.execute_query")
+    @patch("agent.nodes.execute_query")
+    def test_create_project_approval_flow_and_resume(
+        self,
+        mock_node_exec,
+        mock_auth_exec,
+        mock_audit_exec,
+        mock_appr_exec,
+        mock_db_exec,
+        mock_tool_conn,
+        mock_send_wa,
+    ):
+        """Creating a new project triggers critical risk approval, pausing graph, and resuming upon approval."""
+        from langgraph.types import Command
+
+        thread_id = "test-thread-create-project-approval"
+        approval_id = "99999999-9999-9999-9999-999999999999"
+
+        # Mock DB for initial request
+        def mock_init_db(sql, params=None, **kwargs):
+            sql_clean = " ".join(sql.split()).upper()
+            if "FROM PUBLIC.AGENT_USERS" in sql_clean:
+                return [{"id": "user-admin-1", "display_name": "Admin User", "role": "project_admin", "is_active": True}]
+            if "FROM PUBLIC.USER_PROJECT_ACCESS" in sql_clean:
+                return [{"can_propose_projects": True, "can_approve_projects": True}]
+            if "INSERT INTO PUBLIC.PENDING_APPROVALS" in sql_clean:
+                return [{"id": approval_id, "status": "pending"}]
+            return []
+
+        mock_node_exec.side_effect = mock_init_db
+        mock_auth_exec.side_effect = mock_init_db
+        mock_appr_exec.side_effect = mock_init_db
+        mock_db_exec.side_effect = mock_init_db
+        mock_audit_exec.side_effect = mock_init_db
+
+        # Mock tool DB connection
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            "id": "new-proj-uuid-1",
+            "project_name": "Mumbai Metro Phase 2",
+            "project_code": "MMP2",
+            "location": "Mumbai",
+            "status": "active",
+            "created_at": "2026-09-24T12:00:00Z",
+        }
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_tool_conn.return_value.__enter__.return_value = mock_conn
+
+        # Step 1: Initial invocation triggers approval
+        with patch("agent.nodes._get_llm_reply") as mock_llm:
+            mock_llm.return_value = json.dumps({
+                "intent": "write",
+                "selected_tool": "create_project",
+                "project_name": "Mumbai Metro Phase 2",
+                "tool_arguments": {
+                    "project_name": "Mumbai Metro Phase 2",
+                    "project_code": "MMP2",
+                    "location": "Mumbai",
+                    "status": "active",
+                }
+            })
+
+            initial_state = {
+                "run_id": "run-create-proj-1",
+                "thread_id": thread_id,
+                "incoming_message": "Create new project Mumbai Metro Phase 2 with code MMP2 in Mumbai",
+                "sender_wa_id": "15551112222",
+                "sender_hash": "requester_hash_1",
+            }
+            paused_res = graph.invoke(initial_state, config={"configurable": {"thread_id": thread_id}})
+            self.assertEqual(paused_res.get("approval_status"), "pending")
+            self.assertEqual(paused_res.get("risk_level"), "critical")
+            self.assertEqual(paused_res.get("required_approver_role"), "system_admin")
+            self.assertTrue(paused_res.get("approval_code", "").startswith("APR-"))
+
+        # Step 2: Resume with approval
+        resume_cmd = Command(resume={
+            "decision": "approve",
+            "decision_reason": "Approved by system admin",
+        })
+        resumed_res = graph.invoke(resume_cmd, config={"configurable": {"thread_id": thread_id}})
+
+        # Step 3: Verify execution and grounded response
+        self.assertTrue(resumed_res.get("goal_complete"))
+        self.assertEqual(resumed_res.get("project_id"), "new-proj-uuid-1")
+        self.assertIn("Mumbai Metro Phase 2", resumed_res.get("final_response", ""))
+        self.assertIn("MMP2", resumed_res.get("final_response", ""))
+        self.assertIn("Successfully created new project", resumed_res.get("final_response", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -436,6 +436,16 @@ def validate_and_process_approval(
         # System-level approval
         if approver_role in ("system_admin", "project_admin"):
             role_authorized = True
+        else:
+            sql_acc = """
+                SELECT can_approve_projects
+                FROM public.user_project_access
+                WHERE user_id = %s
+                LIMIT 1;
+            """
+            acc_rows = execute_query(sql_acc, (approver_id,), user_id=approver_id)
+            if acc_rows and acc_rows[0].get("can_approve_projects"):
+                role_authorized = True
 
     if not role_authorized:
         _update_approval_status(approval_id, "rejected", approver_id, "reject", "invalid_approval_context", now)

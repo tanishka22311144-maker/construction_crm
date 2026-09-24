@@ -66,9 +66,9 @@ def route_risk(state: AgentState) -> str:
 def route_approval_resume(state: AgentState) -> str:
     """Route after resuming from approval."""
     status = (state.get("approval_status") or "").strip().lower()
-    if status == "approved":
+    if status in ("approved", "approve"):
         return "approved"
-    if status == "edited":
+    if status in ("edited", "edit"):
         return "edited"
     if status == "pending":
         return "pending"

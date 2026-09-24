@@ -363,7 +363,7 @@ Respond with ONLY a valid JSON object (no explanation, no markdown tags outside 
                 cleaned = cleaned.replace("```json", "").replace("```", "").strip()
 
         parsed = json.loads(cleaned)
-        intent = parsed.get("intent") or ("write" if parsed.get("selected_tool") == "add_project_row" else "read")
+        intent = parsed.get("intent") or ("write" if parsed.get("selected_tool") in ("add_project_row", "create_project_field", "create_project") else "read")
         selected_tool = parsed.get("selected_tool")
         extracted_name = parsed.get("project_name")
         tool_arguments = parsed.get("tool_arguments") or {}
@@ -409,15 +409,29 @@ Respond with ONLY a valid JSON object (no explanation, no markdown tags outside 
                 if name_match and name_match.group(1).lower() not in ("field", "to", "for"):
                     f_name = name_match.group(1).lower()
                 tool_arguments = {"field_name": f_name, "field_type": f_type, "record_type": rec_type}
-            elif any(w in lower for w in ("create project", "new project", "add project", "propose project")):
+            elif any(w in lower for w in ("create project", "new project", "add project", "propose project", "create a project", "add a project", "create a new project", "add a new project")):
                 intent = "write"
                 selected_tool = "create_project"
                 p_name = "New Project"
-                proj_match = re.search(r'(?:project)\s+([a-zA-Z0-9\s]+?)(?:\s+code|\s+with|$)', incoming, re.IGNORECASE)
+                proj_match = re.search(r'(?:create\s+(?:a\s+)?(?:new\s+)?project|add\s+(?:a\s+)?(?:new\s+)?project|new\s+project|propose\s+project)\s+([a-zA-Z0-9\s]+?)(?:\s+(?:with\s+code|code|in|at|location)\b|$)', incoming, re.IGNORECASE)
                 if proj_match:
                     p_name = proj_match.group(1).strip()
-                p_code = "".join([part[0] for part in p_name.split() if part]).upper() or "NP01"
-                tool_arguments = {"project_name": p_name, "project_code": p_code}
+                else:
+                    proj_match2 = re.search(r'(?:project)\s+([a-zA-Z0-9\s]+?)(?:\s+code|\s+with|$)', incoming, re.IGNORECASE)
+                    if proj_match2:
+                        p_name = proj_match2.group(1).strip()
+
+                code_match = re.search(r'(?:code|coded)\s+([a-zA-Z0-9_-]+)', incoming, re.IGNORECASE)
+                if code_match:
+                    p_code = code_match.group(1).strip().upper()
+                else:
+                    words = [part for part in re.split(r'[^a-zA-Z0-9]', p_name) if part]
+                    p_code = "".join([part[:2].upper() if len(words) == 1 else part[0].upper() for part in words])[:6] or "NP01"
+
+                loc_match = re.search(r'(?:in|at|location)\s+([a-zA-Z0-9\s]+)$', incoming, re.IGNORECASE)
+                loc = loc_match.group(1).strip() if loc_match else None
+
+                tool_arguments = {"project_name": p_name, "project_code": p_code, "location": loc, "status": "active"}
                 extracted_name = p_name
             elif any(w in lower for w in ("add", "insert", "log", "record", "spend", "bought", "purchase")):
                 intent = "write"
@@ -453,15 +467,31 @@ Respond with ONLY a valid JSON object (no explanation, no markdown tags outside 
                 selected_tool = "read_project_data"
                 tool_arguments = {"limit": 20}
 
-            # Try to extract project name from "to <project>" pattern
-            to_match = re.search(r'\bto\s+(.+?)(?:\s+(?:on|for|of|at|with)\b|$)', incoming, re.IGNORECASE)
-            if to_match:
-                extracted_name = to_match.group(1).strip()
-            else:
-                # Try "for <project>" pattern
-                for_match = re.search(r'\bfor\s+(.+?)(?:\s+(?:on|of|at|with)\b|$)', incoming, re.IGNORECASE)
-                if for_match:
-                    extracted_name = for_match.group(1).strip()
+            # Try to extract project name from "to <project>" pattern only if not already extracted
+            if not extracted_name:
+                to_match = re.search(r'\bto\s+(.+?)(?:\s+(?:on|for|of|at|with)\b|$)', incoming, re.IGNORECASE)
+                if to_match:
+                    extracted_name = to_match.group(1).strip()
+                else:
+                    # Try "for <project>" pattern
+                    for_match = re.search(r'\bfor\s+(.+?)(?:\s+(?:on|of|at|with)\b|$)', incoming, re.IGNORECASE)
+                    if for_match:
+                        extracted_name = for_match.group(1).strip()
+
+    if selected_tool == "create_project":
+        intent = "write"
+        p_name = tool_arguments.get("project_name") or extracted_name or ""
+        p_code = tool_arguments.get("project_code")
+        if not p_code and p_name:
+            words = [w for w in re.split(r'[^a-zA-Z0-9]', p_name) if w]
+            if words:
+                derived = "".join([w[:2].upper() if len(words) == 1 else w[0].upper() for w in words])[:6]
+                p_code = derived or "PRJ"
+                tool_arguments["project_code"] = p_code
+        if p_name:
+            tool_arguments.setdefault("project_name", p_name)
+            if not extracted_name:
+                extracted_name = p_name
 
     state["intent"] = intent
     state["selected_tool"] = selected_tool
@@ -504,13 +534,14 @@ def create_plan(state: dict) -> dict:
         ]
     elif selected_tool == "create_project":
         plan = [
-            {"step": 1, "action": "check_permission"},
-            {"step": 2, "action": "classify_risk"},
-            {"step": 3, "action": "request_approval"},
-            {"step": 4, "action": "resume_after_approval"},
-            {"step": 5, "action": "create_project"},
-            {"step": 6, "action": "verify_operation"},
-            {"step": 7, "action": "evaluate_goal"},
+            {"step": 1, "action": "resolve_project"},
+            {"step": 2, "action": "check_permission"},
+            {"step": 3, "action": "classify_risk"},
+            {"step": 4, "action": "request_approval"},
+            {"step": 5, "action": "resume_after_approval"},
+            {"step": 6, "action": "create_project"},
+            {"step": 7, "action": "verify_operation"},
+            {"step": 8, "action": "evaluate_goal"},
         ]
     else:
         plan = [
@@ -786,12 +817,14 @@ def resume_after_approval(state: dict) -> dict:
     status = (state.get("approval_status") or "").strip().lower()
     reason = state.get("approval_decision_reason") or "No reason provided"
 
-    if status == "approved":
+    if status in ("approved", "approve"):
+        state["approval_status"] = "approved"
         state["validation_status"] = "valid"
         _debug_log("resume_after_approval_approved")
         return state
 
-    if status == "rejected":
+    if status in ("rejected", "reject"):
+        state["approval_status"] = "rejected"
         state["validation_status"] = "failed"
         state["goal_complete"] = False
         state["final_response"] = f"Operation was rejected by approver: {reason}"
@@ -805,7 +838,8 @@ def resume_after_approval(state: dict) -> dict:
         _debug_log("resume_after_approval_expired")
         return state
 
-    if status == "edited":
+    if status in ("edited", "edit"):
+        state["approval_status"] = "edited"
         state["validation_status"] = "edited"
         _debug_log("resume_after_approval_edited")
         return state
