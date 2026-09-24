@@ -181,8 +181,14 @@ def check_write_idempotency(
     idempotency_key: str,
     project_id: str,
     user_id: Optional[str] = None,
+    window_minutes: int = 5,
 ) -> Optional[dict[str, Any]]:
-    """Check if a project record with this idempotency key was already created."""
+    """Check if a project record with this idempotency key was already created.
+
+    Only considers records created within the last `window_minutes` minutes,
+    so that intentional repeated writes (e.g. same fuel purchase next week)
+    are not blocked, while accidental duplicates within seconds/minutes are.
+    """
     if not idempotency_key or not project_id:
         return None
 
@@ -191,10 +197,11 @@ def check_write_idempotency(
         FROM public.project_records
         WHERE project_id = %s
           AND data->>'idempotency_key' = %s
+          AND created_at > now() - interval '%s minutes'
         LIMIT 1;
     """
     try:
-        rows = execute_query(sql, (project_id, idempotency_key), user_id=user_id)
+        rows = execute_query(sql, (project_id, idempotency_key, window_minutes), user_id=user_id)
         if rows:
             return rows[0]
         return None

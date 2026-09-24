@@ -80,17 +80,21 @@ def add_project_row(
     record_data = dict(data) if isinstance(data, dict) else {}
 
     # Compute idempotency key (PROJECT_SPEC.md §10)
+    # Keyed on canonical write arguments only — NOT on message_id — so that
+    # two different WhatsApp messages with identical content are caught as
+    # duplicates within the time window enforced by check_write_idempotency.
+    # message_id-level dedup is handled earlier at the webhook layer
+    # (check_and_start_message_dedup in api/index.py).
     idempotency_payload = {
         "project_id": str(project_id),
         "record_type": rec_type,
         "title": title or "",
         "amount": parsed_amount,
         "unit": unit or "INR",
-        "data": record_data,
     }
     canonical_args = json.dumps(idempotency_payload, sort_keys=True)
     idempotency_key = hashlib.sha256(
-        f"{message_id or ''}:add_project_row:{canonical_args}".encode("utf-8")
+        f"add_project_row:{canonical_args}".encode("utf-8")
     ).hexdigest()
 
     # Check for existing insert before writing

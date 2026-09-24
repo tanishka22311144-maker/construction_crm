@@ -304,20 +304,27 @@ Available Tools:
 2. "add_project_row": Record an expense, daily log, or equipment log for a project.
    Arguments:
    - "record_type": "expense" | "daily_log" | "equipment_log"
-   - "title": short summary of the entry (e.g. "Fuel", "Cement bags", "Excavator inspection")
-   - "amount": numeric cost or quantity (e.g. 2500, 10) or null
-   - "unit": currency or unit (e.g. "INR", "USD", "hours", "bags")
+   - "title": short descriptive summary of the entry (e.g. "Fuel", "Cement bags", "Excavator inspection"). NEVER use generic titles like "Entry" or "Expense".
+   - "amount": numeric cost or quantity (e.g. 2500, 10) or null if not mentioned
+   - "unit": currency or unit (e.g. "INR", "USD", "hours", "bags"). Default "INR".
    - "record_date": YYYY-MM-DD or null
    - "data": additional key-value details (e.g. {{"category": "Fuel"}})
 
 {conversation_context}User message: "{incoming}"
 
-Decide which tool to use and extract arguments directly.
+IMPORTANT RULES:
+1. If the user's message is a FOLLOW-UP or CONTINUATION of a previous incomplete request visible in conversation context above (e.g. providing a missing amount, project name, or detail), COMBINE the information from both messages to form a complete tool call. Do not treat the follow-up as a standalone message.
+2. If the user mentions a project name — even with typos or abbreviations — always pass it in "project_name" as-is. Never return "unsupported" just because the project name looks wrong; the system will handle fuzzy matching.
+3. For write intents: if the user clearly wants to add/record/log something, always set intent to "write" and selected_tool to "add_project_row", even if some arguments are missing. Set missing arguments to null.
+4. For read intents: if the user wants to see/show/list/query records, set intent to "read" and selected_tool to "read_project_data".
+5. Only use intent "unsupported" if the request has nothing to do with construction project records (e.g. "tell me a joke", "what's the weather").
+6. If the user provides an informal amount like "five thousand-ish" or "around 2k", convert it to the closest numeric value.
+
 Respond with ONLY a valid JSON object (no explanation, no markdown tags outside json):
 {{
   "intent": "read" | "write" | "unsupported",
   "selected_tool": "read_project_data" | "add_project_row" | null,
-  "project_name": "name of project mentioned or implied, or null",
+  "project_name": "name of project mentioned or implied from context, or null",
   "tool_arguments": {{ ... }}
 }}"""
 
@@ -352,22 +359,71 @@ Respond with ONLY a valid JSON object (no explanation, no markdown tags outside 
         _debug_log("understand_request_llm", intent=intent, selected_tool=selected_tool, project_name=extracted_name, tool_arguments=tool_arguments)
     except Exception as exc:
         _debug_log("understand_request_parse_error", error=str(exc), raw_preview=llm_response[:160])
-        # Graceful fallback for offline testing or unconfigured LLM
-        lower = incoming.lower().strip()
-        if any(w in lower for w in ("add", "insert", "log", "record", "spend", "bought", "purchase")):
-            intent = "write"
-            selected_tool = "add_project_row"
-            rec_type = "expense" if ("expense" in lower or "fuel" in lower or "cost" in lower) else ("equipment_log" if "equipment" in lower else "daily_log")
-            tool_arguments = {"record_type": rec_type, "title": "Entry"}
-        elif any(w in lower for w in ("show", "what", "which", "list", "get", "query", "find", "view")):
-            intent = "read"
-            selected_tool = "read_project_data"
-            rec_type = "expense" if "expense" in lower else ("daily_log" if "daily" in lower else None)
-            tool_arguments = {"record_type": rec_type, "limit": 20}
-        else:
-            intent = "read"
-            selected_tool = "read_project_data"
-            tool_arguments = {"limit": 20}
+
+        # Try to salvage partial JSON from a truncated LLM response
+        if llm_response and "{" in llm_response:
+            try:
+                # Find the first { and try to parse from there
+                json_start = llm_response.index("{")
+                partial = llm_response[json_start:]
+                # Try to auto-close truncated JSON
+                if partial.count("{") > partial.count("}"):
+                    partial = partial + "}" * (partial.count("{") - partial.count("}"))
+                salvaged = json.loads(partial)
+                intent = salvaged.get("intent") or intent
+                selected_tool = salvaged.get("selected_tool") or selected_tool
+                extracted_name = salvaged.get("project_name") or extracted_name
+                tool_arguments = salvaged.get("tool_arguments") or tool_arguments
+                _debug_log("understand_request_salvaged_partial_json", intent=intent, selected_tool=selected_tool)
+            except Exception:
+                pass  # Fall through to keyword fallback
+
+        # Keyword fallback for offline testing or completely failed LLM
+        if not extracted_name:
+            lower = incoming.lower().strip()
+            if any(w in lower for w in ("add", "insert", "log", "record", "spend", "bought", "purchase")):
+                intent = "write"
+                selected_tool = "add_project_row"
+                rec_type = "expense" if ("expense" in lower or "fuel" in lower or "cost" in lower) else ("equipment_log" if "equipment" in lower else "daily_log")
+
+                # Extract a descriptive title from the message instead of "Entry"
+                title = "Expense"
+                for keyword in ("fuel", "cement", "steel", "concrete", "sand", "labour", "labor",
+                                "equipment", "material", "transport", "paint", "plumbing", "electrical"):
+                    if keyword in lower:
+                        title = keyword.capitalize()
+                        break
+
+                # Extract numeric amount if present
+                amount = None
+                import re as _re
+                amt_match = _re.search(r'(\d[\d,]*\.?\d*)', incoming)
+                if amt_match:
+                    try:
+                        amount = float(amt_match.group(1).replace(",", ""))
+                    except ValueError:
+                        pass
+
+                tool_arguments = {"record_type": rec_type, "title": title, "amount": amount}
+            elif any(w in lower for w in ("show", "what", "which", "list", "get", "query", "find", "view")):
+                intent = "read"
+                selected_tool = "read_project_data"
+                rec_type = "expense" if "expense" in lower else ("daily_log" if "daily" in lower else None)
+                tool_arguments = {"record_type": rec_type, "limit": 20}
+            else:
+                intent = "read"
+                selected_tool = "read_project_data"
+                tool_arguments = {"limit": 20}
+
+            # Try to extract project name from "to <project>" pattern
+            to_match = re.search(r'\bto\s+(.+?)(?:\s+(?:on|for|of|at|with)\b|$)', incoming, re.IGNORECASE)
+            if to_match:
+                extracted_name = to_match.group(1).strip()
+            else:
+                # Try "for <project>" pattern
+                for_match = re.search(r'\bfor\s+(.+?)(?:\s+(?:on|of|at|with)\b|$)', incoming, re.IGNORECASE)
+                if for_match:
+                    extracted_name = for_match.group(1).strip()
 
     state["intent"] = intent
     state["selected_tool"] = selected_tool
@@ -447,9 +503,22 @@ def resolve_project(state: dict) -> dict:
     - Exact match -> proceed to permission check
     - Ambiguous / multiple matches -> ask_user (do not guess)
     - No match -> ask_user (do not guess)
+
+    For write operations, never auto-resolve when the user didn't specify
+    a project name — always ask them to confirm the target.
     """
     project_name = state.get("project_name")
     user_id = state.get("user_id")
+    intent = state.get("intent", "read")
+
+    # Bug 5 fix: For writes, require explicit project name from user.
+    # Don't silently pick the only project in the DB.
+    if not project_name and intent == "write":
+        state["project_id"] = None
+        state["resolution_status"] = "missing"
+        state["final_response"] = "Which project should I add this record to? Please include the project name in your message."
+        _debug_log("resolve_project_write_no_name")
+        return state
 
     query = "SELECT id, project_name, project_code FROM public.projects"
     params: list[Any] = []
@@ -491,6 +560,11 @@ def resolve_project(state: dict) -> dict:
             match_names = ", ".join([f"'{r['project_name']}'" for r in rows[:3]])
             state["final_response"] = f"Please specify a project. Available projects: {match_names}."
             _debug_log("resolve_project_no_name_multiple")
+        elif len(rows) == 0 and project_name:
+            state["project_id"] = None
+            state["resolution_status"] = "not_found"
+            state["final_response"] = f"Could not find any project matching '{project_name}'. Please specify a valid project name."
+            _debug_log("resolve_project_not_found", search_term=project_name)
         else:
             state["project_id"] = None
             state["resolution_status"] = "not_found"
