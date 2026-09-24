@@ -12,7 +12,7 @@ from services.audit import (
     record_agent_run,
     record_agent_event,
 )
-from services.authorization import authorize
+from services.authorization import authorize, classify_risk
 from services.database import execute_query
 from services.identity import hash_whatsapp_number
 from services.verification import (
@@ -23,6 +23,8 @@ from services.verification import (
 )
 from tools.read_project_data import read_project_data
 from tools.add_project_row import add_project_row
+from tools.create_project_field import create_project_field
+from tools.create_project import create_project
 
 # Bounded execution limits per PROJECT_SPEC.md §9
 MAX_AGENT_STEPS = 10
@@ -310,12 +312,28 @@ Available Tools:
    - "record_date": YYYY-MM-DD or null
    - "data": additional key-value details (e.g. {{"category": "Fuel"}})
 
+3. "create_project_field": Propose/create a new custom field definition for a project.
+   Arguments:
+   - "record_type": "expense" | "daily_log" | "equipment_log"
+   - "field_name": string (snake_case, e.g. "workers_present", "material_supplier")
+   - "field_type": "text" | "integer" | "numeric" | "boolean" | "date" | "enum"
+   - "required": boolean (default false)
+   - "default_value": any or null
+   - "validation_rules": dict or null
+
+4. "create_project": Propose/create a new construction project.
+   Arguments:
+   - "project_name": string (e.g. "Mumbai Metro Phase 2")
+   - "project_code": string (e.g. "MMP2")
+   - "location": string or null
+   - "status": "active" | "planned"
+
 {conversation_context}User message: "{incoming}"
 
 IMPORTANT RULES:
 1. If the user's message is a FOLLOW-UP or CONTINUATION of a previous incomplete request visible in conversation context above (e.g. providing a missing amount, project name, or detail), COMBINE the information from both messages to form a complete tool call. Do not treat the follow-up as a standalone message.
 2. If the user mentions a project name — even with typos or abbreviations — always pass it in "project_name" as-is. Never return "unsupported" just because the project name looks wrong; the system will handle fuzzy matching.
-3. For write intents: if the user clearly wants to add/record/log something, always set intent to "write" and selected_tool to "add_project_row", even if some arguments are missing. Set missing arguments to null.
+3. For write intents: if the user clearly wants to add/record/log something, always set intent to "write" and select the appropriate tool ("add_project_row", "create_project_field", or "create_project"), even if some arguments are missing. Set missing arguments to null.
 4. For read intents: if the user wants to see/show/list/query records, set intent to "read" and selected_tool to "read_project_data".
 5. Only use intent "unsupported" if the request has nothing to do with construction project records (e.g. "tell me a joke", "what's the weather").
 6. If the user provides an informal amount like "five thousand-ish" or "around 2k", convert it to the closest numeric value.
@@ -323,7 +341,7 @@ IMPORTANT RULES:
 Respond with ONLY a valid JSON object (no explanation, no markdown tags outside json):
 {{
   "intent": "read" | "write" | "unsupported",
-  "selected_tool": "read_project_data" | "add_project_row" | null,
+  "selected_tool": "read_project_data" | "add_project_row" | "create_project_field" | "create_project" | null,
   "project_name": "name of project mentioned or implied from context, or null",
   "tool_arguments": {{ ... }}
 }}"""
@@ -381,7 +399,27 @@ Respond with ONLY a valid JSON object (no explanation, no markdown tags outside 
         # Keyword fallback for offline testing or completely failed LLM
         if not extracted_name:
             lower = incoming.lower().strip()
-            if any(w in lower for w in ("add", "insert", "log", "record", "spend", "bought", "purchase")):
+            if any(w in lower for w in ("create field", "add field", "new field", "propose field")):
+                intent = "write"
+                selected_tool = "create_project_field"
+                rec_type = "expense" if "expense" in lower else ("equipment_log" if "equipment" in lower else "daily_log")
+                f_type = "integer" if any(w in lower for w in ("int", "number", "count")) else ("boolean" if "bool" in lower else "text")
+                f_name = "custom_field"
+                name_match = re.search(r'(?:field|add)\s+([a-zA-Z_][a-zA-Z0-9_]*)', incoming, re.IGNORECASE)
+                if name_match and name_match.group(1).lower() not in ("field", "to", "for"):
+                    f_name = name_match.group(1).lower()
+                tool_arguments = {"field_name": f_name, "field_type": f_type, "record_type": rec_type}
+            elif any(w in lower for w in ("create project", "new project", "add project", "propose project")):
+                intent = "write"
+                selected_tool = "create_project"
+                p_name = "New Project"
+                proj_match = re.search(r'(?:project)\s+([a-zA-Z0-9\s]+?)(?:\s+code|\s+with|$)', incoming, re.IGNORECASE)
+                if proj_match:
+                    p_name = proj_match.group(1).strip()
+                p_code = "".join([part[0] for part in p_name.split() if part]).upper() or "NP01"
+                tool_arguments = {"project_name": p_name, "project_code": p_code}
+                extracted_name = p_name
+            elif any(w in lower for w in ("add", "insert", "log", "record", "spend", "bought", "purchase")):
                 intent = "write"
                 selected_tool = "add_project_row"
                 rec_type = "expense" if ("expense" in lower or "fuel" in lower or "cost" in lower) else ("equipment_log" if "equipment" in lower else "daily_log")
@@ -448,9 +486,31 @@ def create_plan(state: dict) -> dict:
         plan = [
             {"step": 1, "action": "resolve_project"},
             {"step": 2, "action": "check_permission"},
-            {"step": 3, "action": "add_project_row"},
-            {"step": 4, "action": "verify_operation"},
-            {"step": 5, "action": "evaluate_goal"},
+            {"step": 3, "action": "classify_risk"},
+            {"step": 4, "action": "add_project_row"},
+            {"step": 5, "action": "verify_operation"},
+            {"step": 6, "action": "evaluate_goal"},
+        ]
+    elif selected_tool == "create_project_field":
+        plan = [
+            {"step": 1, "action": "resolve_project"},
+            {"step": 2, "action": "check_permission"},
+            {"step": 3, "action": "classify_risk"},
+            {"step": 4, "action": "request_approval"},
+            {"step": 5, "action": "resume_after_approval"},
+            {"step": 6, "action": "create_project_field"},
+            {"step": 7, "action": "verify_operation"},
+            {"step": 8, "action": "evaluate_goal"},
+        ]
+    elif selected_tool == "create_project":
+        plan = [
+            {"step": 1, "action": "check_permission"},
+            {"step": 2, "action": "classify_risk"},
+            {"step": 3, "action": "request_approval"},
+            {"step": 4, "action": "resume_after_approval"},
+            {"step": 5, "action": "create_project"},
+            {"step": 6, "action": "verify_operation"},
+            {"step": 7, "action": "evaluate_goal"},
         ]
     else:
         plan = [
@@ -470,8 +530,13 @@ def validate_plan(state: dict) -> dict:
     allowed_actions = {
         "resolve_project",
         "check_permission",
+        "classify_risk",
+        "request_approval",
+        "resume_after_approval",
         "read_project_data",
         "add_project_row",
+        "create_project_field",
+        "create_project",
         "verify_operation",
         "evaluate_goal",
     }
@@ -487,7 +552,7 @@ def validate_plan(state: dict) -> dict:
         if action not in allowed_actions:
             state["plan_valid"] = False
             state["error_reason"] = f"Operation '{action}' is unsupported."
-            state["final_response"] = "I can only help query or add project records (expenses, daily logs, equipment logs) at this time. Other operations are not supported yet."
+            state["final_response"] = "I can only help query or add project records, or propose fields and projects. Other operations are not supported yet."
             _debug_log("validate_plan_unsupported_action", action=action)
             return state
 
@@ -507,6 +572,11 @@ def resolve_project(state: dict) -> dict:
     For write operations, never auto-resolve when the user didn't specify
     a project name — always ask them to confirm the target.
     """
+    if state.get("selected_tool") == "create_project":
+        state["resolution_status"] = "exact"
+        _debug_log("resolve_project_skipped_for_create_project")
+        return state
+
     project_name = state.get("project_name")
     user_id = state.get("user_id")
     intent = state.get("intent", "read")
@@ -585,9 +655,161 @@ def check_permission(state: dict) -> dict:
     project_id = state.get("project_id")
     operation = state.get("selected_tool") or "read_project_data"
 
-    auth_result = authorize(user_id=user_id, project_id=project_id, operation=operation)
+    auth_result = authorize(
+        user_id=user_id,
+        project_id=project_id,
+        operation=operation,
+        tool_arguments=state.get("tool_arguments", {}),
+    )
     state["permission_result"] = auth_result
     _debug_log("check_permission", allowed=auth_result.get("allowed"), reason=auth_result.get("reason"))
+    return state
+
+
+def classify_risk_node(state: dict) -> dict:
+    """Classify risk and determine human approval requirements."""
+    selected_tool = state.get("selected_tool") or "read_project_data"
+    tool_args = state.get("tool_arguments", {})
+    perm = state.get("permission_result") or {}
+
+    risk_level = perm.get("risk_level")
+    human_approval_required = perm.get("human_approval_required")
+    required_role = perm.get("required_role")
+
+    if not risk_level:
+        from services.authorization import classify_risk as _classify_risk
+        risk_info = _classify_risk(selected_tool, tool_arguments=tool_args)
+        risk_level = risk_info["risk_level"]
+        human_approval_required = risk_info["human_approval_required"]
+        required_role = risk_info.get("required_role")
+
+    state["risk_level"] = risk_level
+    state["human_approval_required"] = bool(human_approval_required)
+    state["required_approver_role"] = required_role
+    _debug_log("classify_risk", risk_level=risk_level, human_approval_required=human_approval_required, required_role=required_role)
+
+    if human_approval_required:
+        from services.approvals import create_pending_approval
+        run_id = state.get("run_id") or ""
+        thread_id = state.get("thread_id") or ""
+        user_id = state.get("user_id") or ""
+        sender_hash = state.get("sender_hash")
+        project_id = state.get("project_id")
+        project_name = state.get("project_name")
+
+        try:
+            approval_res = create_pending_approval(
+                run_id=run_id,
+                thread_id=thread_id,
+                requested_by=user_id,
+                required_approver_role=required_role,
+                operation=selected_tool,
+                proposed_payload=tool_args,
+                project_id=project_id,
+                project_name=project_name,
+                user_id=user_id,
+                sender_hash=sender_hash,
+            )
+            approval_id = approval_res["approval_id"]
+            approval_code = approval_res["approval_code"]
+            formatted_msg = approval_res.get("formatted_message", "")
+        except Exception as exc:
+            _debug_log("create_pending_approval_fallback", error=str(exc))
+            approval_id = str(uuid.uuid4())
+            approval_code = f"APR-{approval_id.replace('-', '')[:6].upper()}"
+            formatted_msg = ""
+
+        state["approval_id"] = approval_id
+        state["approval_code"] = approval_code
+        state["approval_status"] = "pending"
+        role_display = required_role.replace("_", " ")
+        state["final_response"] = (
+            f"Approval required for this action. Request {approval_code} has been submitted "
+            f"to the {role_display}. I will proceed once approved."
+        )
+
+        # Notify approver via WhatsApp if approver phone number is configured
+        approver_wa_id = os.getenv("APPROVER_WHATSAPP_NUMBER") or os.getenv("ADMIN_PHONE_NUMBER")
+        if approver_wa_id and formatted_msg:
+            try:
+                from services.whatsapp import send_whatsapp_message
+                send_whatsapp_message(approver_wa_id, formatted_msg)
+                _debug_log("notified_approver", approver_wa_id=approver_wa_id, approval_code=approval_code)
+            except Exception as send_err:
+                _debug_log("notify_approver_failed", error=str(send_err))
+
+    return state
+
+
+def request_approval(state: dict) -> dict:
+    """Request human approval over WhatsApp per PROJECT_SPEC.md §11.
+
+    Saves checkpoint state, interrupts execution, and waits for resume.
+    """
+    approval_id = state.get("approval_id")
+    approval_code = state.get("approval_code")
+    selected_tool = state.get("selected_tool") or "operation"
+    project_id = state.get("project_id")
+    tool_args = state.get("tool_arguments") or {}
+    required_role = state.get("required_approver_role") or "project_admin"
+
+    # In interrupt-capable environments, call interrupt()
+    try:
+        from langgraph.types import interrupt
+        from langgraph.errors import GraphInterrupt
+        decision = interrupt({
+            "approval_id": approval_id,
+            "approval_code": approval_code,
+            "operation": selected_tool,
+            "project_id": project_id,
+            "payload": tool_args,
+            "required_role": required_role,
+            "allowed_decisions": ["approve", "edit", "reject"],
+        })
+        if isinstance(decision, dict):
+            state["approval_status"] = decision.get("decision") or state["approval_status"]
+            state["approval_decision_reason"] = decision.get("decision_reason")
+            if decision.get("edited_payload"):
+                state["tool_arguments"] = decision["edited_payload"]
+    except GraphInterrupt:
+        raise
+    except Exception:
+        pass
+
+    return state
+
+
+def resume_after_approval(state: dict) -> dict:
+    """Evaluate approval outcome after resume."""
+    status = (state.get("approval_status") or "").strip().lower()
+    reason = state.get("approval_decision_reason") or "No reason provided"
+
+    if status == "approved":
+        state["validation_status"] = "valid"
+        _debug_log("resume_after_approval_approved")
+        return state
+
+    if status == "rejected":
+        state["validation_status"] = "failed"
+        state["goal_complete"] = False
+        state["final_response"] = f"Operation was rejected by approver: {reason}"
+        _debug_log("resume_after_approval_rejected", reason=reason)
+        return state
+
+    if status == "expired":
+        state["validation_status"] = "failed"
+        state["goal_complete"] = False
+        state["final_response"] = "The approval request has expired. Please submit a new request."
+        _debug_log("resume_after_approval_expired")
+        return state
+
+    if status == "edited":
+        state["validation_status"] = "edited"
+        _debug_log("resume_after_approval_edited")
+        return state
+
+    state["validation_status"] = "pending"
+    _debug_log("resume_after_approval_pending")
     return state
 
 
@@ -614,6 +836,27 @@ def execute_tool(state: dict) -> dict:
             user_id=user_id,
             sender_hash=sender_hash,
         )
+    elif selected_tool == "create_project_field":
+        result = create_project_field(
+            project_id=project_id,
+            record_type=tool_args.get("record_type") or "daily_log",
+            field_name=tool_args.get("field_name") or "",
+            field_type=tool_args.get("field_type") or "text",
+            required=bool(tool_args.get("required", False)),
+            default_value=tool_args.get("default_value"),
+            validation_rules=tool_args.get("validation_rules"),
+            user_id=user_id,
+            sender_hash=sender_hash,
+        )
+    elif selected_tool == "create_project":
+        result = create_project(
+            project_name=tool_args.get("project_name") or state.get("project_name") or "",
+            project_code=tool_args.get("project_code") or "",
+            location=tool_args.get("location"),
+            status=tool_args.get("status") or "active",
+            user_id=user_id,
+            sender_hash=sender_hash,
+        )
     else:
         # Default to read_project_data
         record_type = tool_args.get("record_type")
@@ -635,7 +878,7 @@ def validate_tool_result(state: dict) -> dict:
     tool_result = state.get("tool_result") or {}
     selected_tool = state.get("selected_tool")
 
-    if selected_tool == "add_project_row":
+    if selected_tool in ("add_project_row", "create_project_field", "create_project"):
         verification = validate_write_result(tool_result)
     else:
         verification = validate_read_result(tool_result)
@@ -683,6 +926,73 @@ def verify_operation(state: dict) -> dict:
     user_id = state.get("user_id")
     run_id = state.get("run_id")
     sender_hash = state.get("sender_hash")
+
+    if selected_tool == "create_project_field":
+        if tool_result.get("success") and tool_result.get("record_id"):
+            state["verified_record"] = tool_result.get("data")
+            state["validation_status"] = "valid"
+            record_agent_event(
+                run_id=run_id,
+                sequence_number=1,
+                event_type="VERIFICATION_PASSED",
+                status="completed",
+                node_name="verify_operation",
+                tool_name=selected_tool,
+                input_json=tool_args,
+                output_json=tool_result.get("data"),
+                user_id=user_id,
+                sender_hash=sender_hash,
+            )
+            return state
+        state["validation_status"] = "failed"
+        state["final_response"] = f"Field creation verification failed: {tool_result.get('error')}"
+        record_agent_event(
+            run_id=run_id,
+            sequence_number=1,
+            event_type="VERIFICATION_FAILED",
+            status="failed",
+            node_name="verify_operation",
+            tool_name=selected_tool,
+            input_json=tool_args,
+            error_json={"error": tool_result.get("error")},
+            user_id=user_id,
+            sender_hash=sender_hash,
+        )
+        return state
+
+    if selected_tool == "create_project":
+        if tool_result.get("success") and tool_result.get("record_id"):
+            state["verified_record"] = tool_result.get("data")
+            state["project_id"] = tool_result.get("record_id")
+            state["validation_status"] = "valid"
+            record_agent_event(
+                run_id=run_id,
+                sequence_number=1,
+                event_type="VERIFICATION_PASSED",
+                status="completed",
+                node_name="verify_operation",
+                tool_name=selected_tool,
+                input_json=tool_args,
+                output_json=tool_result.get("data"),
+                user_id=user_id,
+                sender_hash=sender_hash,
+            )
+            return state
+        state["validation_status"] = "failed"
+        state["final_response"] = f"Project creation verification failed: {tool_result.get('error')}"
+        record_agent_event(
+            run_id=run_id,
+            sequence_number=1,
+            event_type="VERIFICATION_FAILED",
+            status="failed",
+            node_name="verify_operation",
+            tool_name=selected_tool,
+            input_json=tool_args,
+            error_json={"error": tool_result.get("error")},
+            user_id=user_id,
+            sender_hash=sender_hash,
+        )
+        return state
 
     # For read operations, Layer 6 read-back is a no-op
     if selected_tool != "add_project_row":
@@ -797,6 +1107,26 @@ def generate_grounded_response(state: dict) -> dict:
             state["final_response"] = f"Successfully recorded {title} ({rec_type}){amt_str} for project '{project_name}'{date_str}."
         state["goal_complete"] = True
         _debug_log("generate_grounded_response_write", response=state["final_response"], idempotent_replay=is_replay)
+        return state
+
+    if selected_tool == "create_project_field":
+        data = state.get("verified_record") or {}
+        field_name = data.get("field_name") or state.get("tool_arguments", {}).get("field_name", "custom field")
+        rec_type = data.get("record_type") or state.get("tool_arguments", {}).get("record_type", "")
+        f_type = data.get("field_type") or state.get("tool_arguments", {}).get("field_type", "text")
+        state["final_response"] = f"Successfully defined new custom field '{field_name}' ({f_type}) for {rec_type} in project '{project_name}'."
+        state["goal_complete"] = True
+        _debug_log("generate_grounded_response_field", response=state["final_response"])
+        return state
+
+    if selected_tool == "create_project":
+        data = state.get("verified_record") or {}
+        p_name = data.get("project_name") or state.get("tool_arguments", {}).get("project_name", "the project")
+        p_code = data.get("project_code") or state.get("tool_arguments", {}).get("project_code", "")
+        code_str = f" [{p_code}]" if p_code else ""
+        state["final_response"] = f"Successfully created new project '{p_name}'{code_str} with default schema fields and admin access."
+        state["goal_complete"] = True
+        _debug_log("generate_grounded_response_project", response=state["final_response"])
         return state
 
     tool_result = state.get("tool_result", {})

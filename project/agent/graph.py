@@ -5,6 +5,7 @@ from langgraph.graph import END, StateGraph
 
 from agent.nodes import (
     check_permission,
+    classify_risk_node as classify_risk,
     create_plan,
     evaluate_goal,
     execute_tool,
@@ -12,7 +13,9 @@ from agent.nodes import (
     load_identity_and_memory,
     load_instructions,
     receive_request,
+    request_approval,
     resolve_project,
+    resume_after_approval,
     safe_failure,
     send_whatsapp_response,
     understand_request,
@@ -53,6 +56,25 @@ def route_permission(state: AgentState) -> str:
     return "denied"
 
 
+def route_risk(state: AgentState) -> str:
+    """Route based on risk classification and approval requirement."""
+    if state.get("human_approval_required"):
+        return "approval_required"
+    return "execute"
+
+
+def route_approval_resume(state: AgentState) -> str:
+    """Route after resuming from approval."""
+    status = (state.get("approval_status") or "").strip().lower()
+    if status == "approved":
+        return "approved"
+    if status == "edited":
+        return "edited"
+    if status == "pending":
+        return "pending"
+    return "failed"
+
+
 def route_tool_result(state: AgentState) -> str:
     """Route based on tool result verification (transient retry vs fatal)."""
     status = state.get("validation_status")
@@ -76,7 +98,7 @@ def route_goal(state: AgentState) -> str:
 def build_graph():
     builder = StateGraph(AgentState)
 
-    # Register nodes per PROJECT_SPEC.md §5 (Stage 3 subset)
+    # Register nodes per PROJECT_SPEC.md §5
     builder.add_node("receive_request", receive_request)
     builder.add_node("load_instructions", load_instructions)
     builder.add_node("load_identity_and_memory", load_identity_and_memory)
@@ -85,6 +107,9 @@ def build_graph():
     builder.add_node("validate_plan", validate_plan)
     builder.add_node("resolve_project", resolve_project)
     builder.add_node("check_permission", check_permission)
+    builder.add_node("classify_risk", classify_risk)
+    builder.add_node("request_approval", request_approval)
+    builder.add_node("resume_after_approval", resume_after_approval)
     builder.add_node("execute_tool", execute_tool)
     builder.add_node("validate_tool_result", validate_tool_result)
     builder.add_node("verify_operation", verify_operation)
@@ -134,13 +159,38 @@ def build_graph():
         },
     )
 
-    # Permission check edge
+    # Permission check edge -> routes to classify_risk if allowed
     builder.add_conditional_edges(
         "check_permission",
         route_permission,
         {
-            "allowed": "execute_tool",
+            "allowed": "classify_risk",
             "denied": "safe_failure",
+        },
+    )
+
+    # Risk classification edge
+    builder.add_conditional_edges(
+        "classify_risk",
+        route_risk,
+        {
+            "approval_required": "request_approval",
+            "execute": "execute_tool",
+        },
+    )
+
+    # Approval request -> on resume proceeds to resume_after_approval
+    builder.add_edge("request_approval", "resume_after_approval")
+
+    # Approval resume edge
+    builder.add_conditional_edges(
+        "resume_after_approval",
+        route_approval_resume,
+        {
+            "approved": "execute_tool",
+            "edited": "validate_plan",
+            "pending": "send_whatsapp_response",
+            "failed": "safe_failure",
         },
     )
 

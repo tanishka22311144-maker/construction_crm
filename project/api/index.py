@@ -75,6 +75,93 @@ async def receive_webhook(request: Request):
         },
     }), flush=True)
 
+    # Check if this incoming message is an approval reply (e.g. APPROVE APR-XXXX, REJECT APR-XXXX <reason>, EDIT APR-XXXX <changes>)
+    from services.approvals import parse_approval_reply, validate_and_process_approval
+    approval_reply = parse_approval_reply(incoming_text)
+    if approval_reply:
+        approval_code = approval_reply["approval_code"]
+        action = approval_reply["action"]
+        extra_text = approval_reply["extra_text"]
+
+        # Run 5-point deterministic verification checklist
+        approval_res = validate_and_process_approval(
+            approval_code=approval_code,
+            approver_sender_hash=sender_hash,
+            action=action,
+            extra_text=extra_text,
+        )
+
+        if not approval_res.get("valid"):
+            reason = approval_res.get("decision_reason", "invalid_approval_context")
+            details = approval_res.get("details", "")
+            err_msg = f"Approval {approval_code} {action.lower()} rejected: {reason}."
+            if sender_wa_id:
+                _send_whatsapp_reply(sender_wa_id, err_msg)
+            if message_id:
+                complete_message_dedup(message_id, run_id=f"appr-{approval_code}")
+            return JSONResponse({
+                "status": "approval_rejected",
+                "reason": reason,
+                "details": details,
+            })
+
+        # All 5 verification checks passed!
+        target_thread_id = approval_res.get("thread_id")
+        decision_val = approval_res.get("decision")
+        decision_reason = approval_res.get("decision_reason")
+        edited_payload = approval_res.get("edited_payload")
+
+        # Resume the paused thread using thread_id
+        resumed_result = None
+        if target_thread_id:
+            try:
+                from langgraph.types import Command
+                resume_cmd = Command(resume={
+                    "decision": decision_val,
+                    "decision_reason": decision_reason,
+                    "edited_payload": edited_payload,
+                })
+                resumed_result = graph.invoke(
+                    resume_cmd,
+                    config={"configurable": {"thread_id": target_thread_id}},
+                )
+            except Exception as resume_err:
+                print(json.dumps({"event": "resume_graph_error", "error": str(resume_err)}), flush=True)
+
+        final_msg = ""
+        requester_wa_id = None
+        if resumed_result and isinstance(resumed_result, dict):
+            final_msg = resumed_result.get("final_response", "")
+            requester_wa_id = resumed_result.get("sender_wa_id")
+
+        if not final_msg:
+            if action == "APPROVE":
+                final_msg = f"Approval {approval_code} confirmed and completed successfully."
+            elif action == "REJECT":
+                final_msg = f"Request {approval_code} was rejected: {decision_reason}"
+            else:
+                final_msg = f"Request {approval_code} was edited and updated."
+
+        # Verify criteria: Confirm original requester gets confirmation
+        if requester_wa_id and requester_wa_id != canonical_sender:
+            _send_whatsapp_reply(requester_wa_id, final_msg)
+
+        # Notify the approver who sent the approval reply
+        approver_ack = f"Approval {approval_code} processed: {action.lower()}."
+        if sender_wa_id:
+            _send_whatsapp_reply(sender_wa_id, approver_ack)
+
+        if message_id:
+            complete_message_dedup(message_id, run_id=f"appr-{approval_code}")
+
+        return JSONResponse({
+            "status": "ok",
+            "approval_code": approval_code,
+            "decision": decision_val,
+            "final_response": final_msg,
+        })
+
+    # Standard user request flow
     thread_id = f"wa-{sender_hash[:16]}" if sender_hash else f"thread-{uuid.uuid4().hex[:12]}"
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     initial_state = {
@@ -105,13 +192,15 @@ async def receive_webhook(request: Request):
     if message_id:
         complete_message_dedup(message_id, run_id=run_id)
 
-    if sender_wa_id:
+    if sender_wa_id and final_response:
         _send_whatsapp_reply(sender_wa_id, final_response)
 
     return JSONResponse({
         "status": "ok",
         "final_response": final_response,
         "goal_complete": result.get("goal_complete", False),
+        "approval_id": result.get("approval_id"),
+        "approval_code": result.get("approval_code"),
     })
 
 

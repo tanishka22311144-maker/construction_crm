@@ -39,12 +39,15 @@ class AgentState(TypedDict, total=False):
     selected_tool: Optional[str]
     tool_arguments: dict
 
-    # Security
+    # Security & Approval
     risk_level: Optional[str]
     permission_result: dict
     human_approval_required: bool
     approval_id: Optional[str]
+    approval_code: Optional[str]
     approval_status: Optional[str]
+    required_approver_role: Optional[str]
+    approval_decision_reason: Optional[str]
 
     # Execution
     tool_result: dict
