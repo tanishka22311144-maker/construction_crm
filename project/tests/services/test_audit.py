@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 from services.audit import (
     check_and_start_message_dedup,
+    check_write_idempotency,
     complete_message_dedup,
     load_recent_chat_history,
     record_chat_session,
@@ -56,6 +57,32 @@ class TestAuditService(unittest.TestCase):
         sql_query, params = args[0], args[1]
         self.assertNotIn("INTERVAL '1 hour'", sql_query)
         self.assertEqual(params, ("user-123", 6))
+
+    @patch("services.audit.execute_query")
+    def test_check_write_idempotency_found(self, mock_exec):
+        mock_exec.return_value = [{
+            "id": "rec-123",
+            "project_id": "proj-abc",
+            "title": "Expense",
+            "amount": 10000.0,
+        }]
+        res = check_write_idempotency("key-xyz", "proj-abc", user_id="user-1", window_minutes=5)
+        self.assertIsNotNone(res)
+        self.assertEqual(res["id"], "rec-123")
+        args, kwargs = mock_exec.call_args
+        sql_query, params = args[0], args[1]
+        self.assertIn("INTERVAL '1 minute'", sql_query)
+        self.assertEqual(params, ("proj-abc", "key-xyz", 5))
+
+    @patch("services.audit.execute_query")
+    def test_check_write_idempotency_not_found(self, mock_exec):
+        mock_exec.return_value = []
+        res = check_write_idempotency("key-none", "proj-abc")
+        self.assertIsNone(res)
+
+    def test_check_write_idempotency_missing_params(self):
+        self.assertIsNone(check_write_idempotency("", "proj-abc"))
+        self.assertIsNone(check_write_idempotency("key", ""))
 
 
 if __name__ == "__main__":

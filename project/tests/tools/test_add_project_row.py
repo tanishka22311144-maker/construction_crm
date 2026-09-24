@@ -85,6 +85,37 @@ class TestAddProjectRow(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("Invalid amount", result["error"])
 
+    @patch("tools.add_project_row.check_write_idempotency")
+    def test_add_project_row_generic_title_normalization_matches_idempotency(self, mock_idemp):
+        # First call with title=None
+        mock_idemp.return_value = None
+        with patch("tools.add_project_row.execute_query") as mock_exec:
+            mock_exec.return_value = [{"id": "rec-1", "project_id": "proj-1", "title": "Expense", "amount": 10000.0}]
+            res1 = add_project_row(
+                project_id="proj-1",
+                record_type="expense",
+                title=None,
+                amount=10000,
+            )
+            self.assertTrue(res1["success"])
+            key1 = mock_idemp.call_args[0][0]
+
+        # Second call with title="Expense" (e.g. from single-turn message)
+        mock_idemp.reset_mock()
+        mock_idemp.return_value = {"id": "rec-1", "project_id": "proj-1", "title": "Expense", "amount": 10000.0}
+        res2 = add_project_row(
+            project_id="proj-1",
+            record_type="expense",
+            title="Expense",
+            amount=10000,
+        )
+        self.assertTrue(res2["success"])
+        self.assertTrue(res2.get("idempotent_replay"))
+        key2 = mock_idemp.call_args[0][0]
+
+        # Both calls MUST have produced the exact same idempotency key
+        self.assertEqual(key1, key2)
+
 
 if __name__ == "__main__":
     unittest.main()

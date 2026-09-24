@@ -181,7 +181,7 @@ def check_write_idempotency(
     idempotency_key: str,
     project_id: str,
     user_id: Optional[str] = None,
-    window_minutes: int = 5,
+    window_minutes: Optional[int] = None,
 ) -> Optional[dict[str, Any]]:
     """Check if a project record with this idempotency key was already created.
 
@@ -192,12 +192,19 @@ def check_write_idempotency(
     if not idempotency_key or not project_id:
         return None
 
+    if window_minutes is None:
+        try:
+            window_minutes = int(os.getenv("WRITE_IDEMPOTENCY_WINDOW_MINUTES", "10"))
+        except ValueError:
+            window_minutes = 10
+
     sql = """
         SELECT id, project_id, record_type, record_date, title, description, amount, unit, data, created_at
         FROM public.project_records
         WHERE project_id = %s
           AND data->>'idempotency_key' = %s
-          AND created_at > now() - interval '%s minutes'
+          AND created_at >= NOW() - (%s * INTERVAL '1 minute')
+        ORDER BY created_at DESC
         LIMIT 1;
     """
     try:

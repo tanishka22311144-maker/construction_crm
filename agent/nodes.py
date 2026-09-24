@@ -304,7 +304,7 @@ Available Tools:
 2. "add_project_row": Record an expense, daily log, or equipment log for a project.
    Arguments:
    - "record_type": "expense" | "daily_log" | "equipment_log"
-   - "title": short descriptive summary of the entry (e.g. "Fuel", "Cement bags", "Excavator inspection"). NEVER use generic titles like "Entry" or "Expense".
+   - "title": short descriptive summary of the item or work (e.g. "Fuel", "Cement bags", "Excavator inspection"). If the user did not specify what the entry is for, set title to null.
    - "amount": numeric cost or quantity (e.g. 2500, 10) or null if not mentioned
    - "unit": currency or unit (e.g. "INR", "USD", "hours", "bags"). Default "INR".
    - "record_date": YYYY-MM-DD or null
@@ -782,16 +782,21 @@ def generate_grounded_response(state: dict) -> dict:
     if selected_tool == "add_project_row":
         verified = state.get("verified_record") or {}
         rec_type = verified.get("record_type") or "record"
-        title = verified.get("title") or "Item"
+        title = verified.get("title") or rec_type.capitalize()
         amount = verified.get("amount")
         unit = verified.get("unit") or "INR"
         rec_date = verified.get("record_date") or ""
 
         amt_str = f" of {amount} {unit}" if amount is not None else ""
         date_str = f" on {rec_date}" if rec_date else ""
-        state["final_response"] = f"Successfully recorded {title} ({rec_type}){amt_str} for project '{project_name}'{date_str}."
+
+        is_replay = bool(state.get("tool_result", {}).get("idempotent_replay"))
+        if is_replay:
+            state["final_response"] = f"This record was already recorded: {title} ({rec_type}){amt_str} for project '{project_name}'{date_str}."
+        else:
+            state["final_response"] = f"Successfully recorded {title} ({rec_type}){amt_str} for project '{project_name}'{date_str}."
         state["goal_complete"] = True
-        _debug_log("generate_grounded_response_write", response=state["final_response"])
+        _debug_log("generate_grounded_response_write", response=state["final_response"], idempotent_replay=is_replay)
         return state
 
     tool_result = state.get("tool_result", {})

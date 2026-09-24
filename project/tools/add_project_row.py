@@ -79,6 +79,21 @@ def add_project_row(
     final_date = record_date or datetime.now(timezone.utc).date().isoformat()
     record_data = dict(data) if isinstance(data, dict) else {}
 
+    # Normalize title: if omitted or generic (e.g. "item", "entry", "record", or matches record_type),
+    # normalize consistently to default title (e.g. "Expense") so that identical writes across
+    # multi-turn and single-turn share the exact same canonical title and idempotency key.
+    default_titles = {
+        "expense": "Expense",
+        "daily_log": "Daily Log",
+        "equipment_log": "Equipment Log",
+    }
+    clean_title = (title or "").strip()
+    generic_titles = {"item", "entry", "record", rec_type, rec_type.replace("_", " ")}
+    if not clean_title or clean_title.lower() in generic_titles:
+        final_title = default_titles.get(rec_type, rec_type.capitalize())
+    else:
+        final_title = clean_title
+
     # Compute idempotency key (PROJECT_SPEC.md §10)
     # Keyed on canonical write arguments only — NOT on message_id — so that
     # two different WhatsApp messages with identical content are caught as
@@ -88,7 +103,7 @@ def add_project_row(
     idempotency_payload = {
         "project_id": str(project_id),
         "record_type": rec_type,
-        "title": title or "",
+        "title": final_title,
         "amount": parsed_amount,
         "unit": unit or "INR",
     }
@@ -126,7 +141,7 @@ def add_project_row(
         project_id,
         rec_type,
         final_date,
-        title,
+        final_title,
         description,
         parsed_amount,
         unit,

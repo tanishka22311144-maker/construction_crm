@@ -176,7 +176,8 @@ def compare_normalized_values(expected: dict[str, Any], actual: dict[str, Any]) 
     if expected.get("title"):
         exp_title = str(expected["title"]).strip().lower()
         act_title = str(actual.get("title") or "").strip().lower()
-        if exp_title != act_title:
+        generic = {"item", "entry", "record", "expense", "daily_log", "daily log", "equipment_log", "equipment log"}
+        if exp_title != act_title and not (exp_title in generic and act_title in generic):
             mismatches.append(f"title mismatch: expected '{exp_title}', got '{act_title}'")
 
     # Compare amount if expected
