@@ -9,7 +9,9 @@ import uuid
 from urllib import request as urlrequest
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+
+from api.dashboard_ui import get_dashboard_html
 
 from agent.graph import graph
 from services.audit import check_and_start_message_dedup, complete_message_dedup
@@ -281,6 +283,101 @@ def _send_whatsapp_reply(to_wa_id: str, text: str) -> None:
             except Exception:
                 pass
         print(json.dumps({"event": "send_whatsapp_reply_failed", "error": err_detail}))
+
+
+# -------------------------------------------------------------
+# Stage 7 — Web Dashboard & Real-Time Project Excel Endpoints
+# -------------------------------------------------------------
+
+@app.get("/")
+@app.get("/dashboard")
+async def get_dashboard():
+    """Serve the Stage 7 web dashboard with prediction graphs and real-time Excel engine."""
+    supabase_url = os.getenv("SUPABASE_URL", "https://wajzaygkvprhpwxewdte.supabase.co")
+    supabase_anon_key = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndhanpheWdrdnByaHB3eGV3ZHRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU2NjkzNjYsImV4cCI6MjEwMTI0NTM2Nn0.yrOagbQ_rhC7GKAkz4fe92CHXmNCjp1KvHXFroUTXuU")
+    html_content = get_dashboard_html(supabase_url=supabase_url, supabase_anon_key=supabase_anon_key)
+    return HTMLResponse(content=html_content)
+
+
+@app.get("/api/projects")
+async def list_projects():
+    """List all projects for the dashboard project selector."""
+    try:
+        from services.database import execute_query
+        rows = execute_query(
+            "SELECT id, project_name, project_code, location, status, created_at FROM public.projects ORDER BY created_at DESC"
+        )
+        for r in rows:
+            if r.get("id"):
+                r["id"] = str(r["id"])
+            if r.get("created_at") and hasattr(r["created_at"], "isoformat"):
+                r["created_at"] = r["created_at"].isoformat()
+        return {"projects": rows}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/projects/{project_id}/prediction")
+async def get_prediction(project_id: str):
+    """Return S-curve planned schedule, actual cumulative work, and velocity forecast."""
+    try:
+        from services.prediction import calculate_project_prediction
+        pred = calculate_project_prediction(project_id)
+        return pred
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/projects/{project_id}/spreadsheet")
+async def get_spreadsheet(project_id: str):
+    """Return tabular data and column metadata for the project's dedicated in-browser Excel editor."""
+    try:
+        from services.excel_service import get_project_spreadsheet_data
+        data = get_project_spreadsheet_data(project_id)
+        return data
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/projects/{project_id}/excel")
+async def download_excel(project_id: str):
+    """Generate and stream a styled .xlsx binary workbook for this project."""
+    try:
+        from services.excel_service import generate_project_excel, get_project_spreadsheet_data
+        meta = get_project_spreadsheet_data(project_id)
+        proj_code = meta["project"]["project_code"] or "project"
+        excel_bytes = generate_project_excel(project_id)
+        filename = f"{proj_code}_records.xlsx"
+        return Response(
+            content=excel_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/projects/{project_id}/sync_row")
+async def sync_row(project_id: str, request: Request):
+    """Real-time sync endpoint: receives Excel row edit/insert and writes to Supabase."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+
+    try:
+        from services.excel_service import sync_excel_row_to_supabase
+        result = sync_excel_row_to_supabase(project_id, body)
+        status_code = 200 if result.get("success") else 400
+        return JSONResponse(result, status_code=status_code)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
 # --- Debug / health endpoints (non-production) ---

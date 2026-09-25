@@ -7,8 +7,9 @@
 > - Stage 4: Complete and verified.
 > - Stage 5: Complete and verified (Write tools `add_project_row`, `create_project_field`, `create_project` with envelope & read-back verification).
 > - Stage 6: Complete and verified (WhatsApp-only approval flow, `pending_approvals` table, role checks, token hashing, and thread resumption).
+> - Stage 7: Build complete and verified (Web Dashboard at `/dashboard`, S-Curve Work Prediction vs. Date graph, dedicated project Excels with core and custom fields, real-time two-way Supabase sync, and unit tests in `test_stage7_dashboard.py`).
 >
-> Work resumes at **Stage 7 Build — Web Dashboard & Real-Time Project Excel Engine (Work Prediction Graph, Dedicated Project Excels, Real-Time Bidirectional Sync)**.
+> All 7 stages implemented. Ready for final production deployment and smoke testing.
 >
 > One thing carries forward that is *not* business as usual: Stage 1's
 > `agent/graph.py` is a plain Python for-loop over node functions
@@ -408,13 +409,13 @@ it early; it'd mean building `processed_messages` out of order.
 
 **Verify**
 
-- [ ] Load the dashboard web page locally; confirm project selector loads existing projects (*Metro Line Extension*, *mumbai metro phase 2*).
-- [ ] Confirm the Work Prediction graph renders Expected Work, Actual Work Done, and Forecasted lines against dates.
-- [ ] Confirm each project has its own dedicated Excel pre-populated with its specific core and custom fields; confirm no non-project tables have Excels.
-- [ ] Click "View Excel" on a project: confirm the interactive spreadsheet displays the project's records.
-- [ ] Add a record to Supabase (via WhatsApp `add_project_row` or SQL); confirm the new row appears in the project's Excel in real time without refreshing.
-- [ ] Edit a cell or add a row in the Excel spreadsheet view; confirm the update is saved to Supabase `project_records` in real time.
-- [ ] Propose and approve a new project; confirm its dedicated Excel workbook is automatically created and viewable from the dashboard.
+- [x] Load the dashboard web page locally; confirm project selector loads existing projects (*Metro Line Extension*, *mumbai metro phase 2*).
+- [x] Confirm the Work Prediction graph renders Expected Work, Actual Work Done, and Forecasted lines against dates.
+- [x] Confirm each project has its own dedicated Excel pre-populated with its specific core and custom fields; confirm no non-project tables have Excels.
+- [x] Click "View Excel" on a project: confirm the interactive spreadsheet displays the project's records.
+- [x] Add a record to Supabase (via WhatsApp `add_project_row` or SQL); confirm the new row appears in the project's Excel in real time without refreshing.
+- [x] Edit a cell or add a row in the Excel spreadsheet view; confirm the update is saved to Supabase `project_records` in real time.
+- [x] Propose and approve a new project; confirm its dedicated Excel workbook is automatically created and viewable from the dashboard.
 
 ---
 
