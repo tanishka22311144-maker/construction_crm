@@ -208,6 +208,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       }}
     }}
 
+    const API_BASE = "/api/index";
     let currentProjectId = "";
     let spreadsheetData = null;
     let currentSheetType = "daily_log";
@@ -231,7 +232,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     // 1. Load Projects List
     async function loadProjects() {{
       try {{
-        const res = await fetch("/api/projects");
+        const res = await fetch(`${{API_BASE}}/projects`);
         const data = await res.json();
         const selector = document.getElementById("projectSelector");
         selector.innerHTML = "";
@@ -270,7 +271,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     // 3. Load & Render Prediction Chart
     async function loadPredictionData() {{
       try {{
-        const res = await fetch(`/api/projects/${{currentProjectId}}/prediction`);
+        const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/prediction`);
         const pred = await res.json();
 
         // Update KPIs
@@ -393,7 +394,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     // 4. Load & Render Project Dedicated Excel Spreadsheet
     async function loadSpreadsheetData() {{
       try {{
-        const res = await fetch(`/api/projects/${{currentProjectId}}/spreadsheet`);
+        const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/spreadsheet`);
         spreadsheetData = await res.json();
         
         document.getElementById("excelProjectTitle").textContent = 
@@ -495,7 +496,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           ...row,
         }};
 
-        const res = await fetch(`/api/projects/${{currentProjectId}}/sync_row`, {{
+        const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/sync_row`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify(payload),
@@ -541,7 +542,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     // 7. Download Live .xlsx
     document.getElementById("btnDownloadExcel").addEventListener("click", () => {{
       if (!currentProjectId) return;
-      window.location.href = `/api/projects/${{currentProjectId}}/excel`;
+      window.location.href = `${{API_BASE}}/projects/${{currentProjectId}}/excel`;
     }});
 
     // 8. Tab Navigation
