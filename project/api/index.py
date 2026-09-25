@@ -31,9 +31,12 @@ async def verify_webhook(request: Request):
     challenge = params.get("hub.challenge")
 
     verify_token = os.getenv("META_VERIFY_TOKEN") or os.getenv("VERIFY_TOKEN", "")
-    if mode == "subscribe" and token and verify_token and token == verify_token:
-        return PlainTextResponse(challenge or "")
-    return PlainTextResponse("Verification failed", status_code=403)
+    if mode == "subscribe":
+        if token and verify_token and token == verify_token:
+            return PlainTextResponse(challenge or "")
+        return PlainTextResponse("Verification failed", status_code=403)
+    # If opened in a browser directly without hub.mode, serve the dashboard
+    return await get_dashboard()
 
 
 @app.post("/api/index")
@@ -291,6 +294,8 @@ def _send_whatsapp_reply(to_wa_id: str, text: str) -> None:
 
 @app.get("/")
 @app.get("/dashboard")
+@app.get("/api/dashboard")
+@app.get("/api/index/dashboard")
 async def get_dashboard():
     """Serve the Stage 7 web dashboard with prediction graphs and real-time Excel engine."""
     supabase_url = os.getenv("SUPABASE_URL", "https://wajzaygkvprhpwxewdte.supabase.co")
@@ -300,6 +305,7 @@ async def get_dashboard():
 
 
 @app.get("/api/projects")
+@app.get("/api/index/projects")
 async def list_projects():
     """List all projects for the dashboard project selector."""
     try:
@@ -318,6 +324,7 @@ async def list_projects():
 
 
 @app.get("/api/projects/{project_id}/prediction")
+@app.get("/api/index/projects/{project_id}/prediction")
 async def get_prediction(project_id: str):
     """Return S-curve planned schedule, actual cumulative work, and velocity forecast."""
     try:
@@ -331,6 +338,7 @@ async def get_prediction(project_id: str):
 
 
 @app.get("/api/projects/{project_id}/spreadsheet")
+@app.get("/api/index/projects/{project_id}/spreadsheet")
 async def get_spreadsheet(project_id: str):
     """Return tabular data and column metadata for the project's dedicated in-browser Excel editor."""
     try:
@@ -344,6 +352,7 @@ async def get_spreadsheet(project_id: str):
 
 
 @app.get("/api/projects/{project_id}/excel")
+@app.get("/api/index/projects/{project_id}/excel")
 async def download_excel(project_id: str):
     """Generate and stream a styled .xlsx binary workbook for this project."""
     try:
@@ -364,6 +373,7 @@ async def download_excel(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/sync_row")
+@app.post("/api/index/projects/{project_id}/sync_row")
 async def sync_row(project_id: str, request: Request):
     """Real-time sync endpoint: receives Excel row edit/insert and writes to Supabase."""
     try:
