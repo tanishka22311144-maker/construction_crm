@@ -390,6 +390,104 @@ async def sync_row(project_id: str, request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/projects/create")
+@app.post("/api/index/projects/create")
+async def create_project_route(request: Request):
+    """Create a new project from dashboard."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+
+    try:
+        from services.excel_service import create_new_project
+        result = create_new_project(
+            project_name=body.get("project_name", ""),
+            project_code=body.get("project_code"),
+            location=body.get("location"),
+            status=body.get("status", "active"),
+        )
+        return JSONResponse(result, status_code=201)
+    except ValueError as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/projects/{project_id}/import_excel")
+@app.post("/api/index/projects/{project_id}/import_excel")
+async def import_excel_route(project_id: str, request: Request):
+    """Import and reconcile an Excel workbook into an existing project."""
+    content_type = request.headers.get("content-type", "")
+    file_bytes = b""
+    if "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+            file_obj = form.get("file")
+            if file_obj and hasattr(file_obj, "read"):
+                file_bytes = await file_obj.read()
+        except Exception:
+            file_bytes = await request.body()
+    else:
+        file_bytes = await request.body()
+
+    if not file_bytes:
+        return JSONResponse({"success": False, "error": "No file content received"}, status_code=400)
+
+    try:
+        from services.excel_service import import_project_excel
+        result = import_project_excel(file_bytes=file_bytes, project_id=project_id)
+        return JSONResponse(result, status_code=200)
+    except ValueError as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/projects/import_new")
+@app.post("/api/index/projects/import_new")
+async def import_new_project_route(request: Request):
+    """Create a new project and import all sheets directly from an uploaded Excel workbook."""
+    content_type = request.headers.get("content-type", "")
+    file_bytes = b""
+    project_name = request.query_params.get("project_name") or request.headers.get("X-Project-Name")
+    project_code = request.query_params.get("project_code") or request.headers.get("X-Project-Code")
+    location = request.query_params.get("location") or request.headers.get("X-Project-Location")
+
+    if "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+            file_obj = form.get("file")
+            if file_obj and hasattr(file_obj, "read"):
+                file_bytes = await file_obj.read()
+            project_name = form.get("project_name") or project_name
+            project_code = form.get("project_code") or project_code
+            location = form.get("location") or location
+        except Exception:
+            file_bytes = await request.body()
+    else:
+        file_bytes = await request.body()
+
+    if not file_bytes:
+        return JSONResponse({"success": False, "error": "No file content received"}, status_code=400)
+
+    try:
+        from services.excel_service import import_project_excel
+        result = import_project_excel(
+            file_bytes=file_bytes,
+            project_id=None,
+            project_name=project_name,
+            project_code=project_code,
+            location=location,
+        )
+        return JSONResponse(result, status_code=201)
+    except ValueError as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+
 # --- Debug / health endpoints (non-production) ---
 
 @app.get("/health-db")

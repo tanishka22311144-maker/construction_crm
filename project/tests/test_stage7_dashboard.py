@@ -22,6 +22,8 @@ from services.excel_service import (
     get_project_spreadsheet_data,
     generate_project_excel,
     sync_excel_row_to_supabase,
+    create_new_project,
+    import_project_excel,
 )
 
 
@@ -304,6 +306,136 @@ class TestStage7Dashboard(unittest.TestCase):
         self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", resp.headers["content-type"])
         self.assertIn("MLE-01_records.xlsx", resp.headers["content-disposition"])
         self.assertEqual(resp.content, b"fake-excel-binary-content")
+
+    # 6. Project Creation & Excel Import Tests
+    @patch("services.excel_service.get_db_connection")
+    def test_create_new_project_service(self, mock_get_conn):
+        mock_cur = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+        mock_cur.fetchone.return_value = {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "project_name": "Skyline Tower",
+            "project_code": "SKT-01",
+            "location": "Mumbai",
+            "status": "active",
+        }
+
+        res = create_new_project("Skyline Tower", "SKT-01", "Mumbai", "active")
+        self.assertTrue(res["success"])
+        self.assertEqual(res["project"]["project_name"], "Skyline Tower")
+        self.assertGreater(mock_cur.execute.call_count, 1)  # created project + seeded field definitions
+
+    @patch("services.excel_service.execute_query")
+    @patch("services.excel_service.get_db_connection")
+    def test_import_project_excel_service_reconciliation(self, mock_get_conn, mock_query):
+        # Create an Excel workbook in memory
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Daily Logs"
+        ws["A1"] = "Metro Line Extension (MLE-01) — Daily Logs"
+        ws.append(["Record ID", "Date", "Title", "Workers Count", "Soil Density", "Notes"])
+        # Updating existing record
+        ws.append(["11111111-1111-1111-1111-111111111111", "2026-09-02", "Updated Site Clearance", "25", "1.85 g/cm3", "Compacted properly"])
+        # New row without ID
+        ws.append(["", "2026-09-03", "Piling work", "18", "1.90 g/cm3", "Piling complete"])
+        out = io.BytesIO()
+        wb.save(out)
+        excel_bytes = out.getvalue()
+
+        def query_side_effect(sql, params=None):
+            sql_clean = " ".join(sql.split()).upper()
+            if "FROM PUBLIC.PROJECTS" in sql_clean:
+                return [self.sample_project]
+            if "FROM PUBLIC.PROJECT_FIELD_DEFINITIONS" in sql_clean:
+                return self.sample_custom_fields
+            return []
+
+        mock_query.side_effect = query_side_effect
+
+        mock_cur = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+
+        last_query = [""]
+
+        def execute_side_effect(sql, params=None):
+            last_query[0] = " ".join(sql.split()).upper()
+
+        def fetchone_side_effect():
+            q = last_query[0]
+            if "FROM PUBLIC.PROJECTS WHERE ID" in q:
+                return {
+                    "id": self.sample_project_id,
+                    "project_name": "Metro Line Extension",
+                    "project_code": "MLE-01",
+                }
+            if "FROM PUBLIC.PROJECT_RECORDS WHERE ID" in q:
+                return {"id": "11111111-1111-1111-1111-111111111111"}
+            if "INSERT INTO PUBLIC.PROJECT_RECORDS" in q:
+                return {"id": "88888888-8888-8888-8888-888888888888"}
+            return None
+
+        def fetchall_side_effect():
+            q = last_query[0]
+            if "FROM PUBLIC.PROJECT_FIELD_DEFINITIONS" in q:
+                return [
+                    {"field_name": "workers_count", "field_type": "integer"}
+                ]
+            if "SELECT ID FROM PUBLIC.PROJECT_RECORDS" in q:
+                return [
+                    {"id": "11111111-1111-1111-1111-111111111111"},
+                    {"id": "99999999-9999-9999-9999-999999999999"},
+                ]
+            return []
+
+        mock_cur.execute.side_effect = execute_side_effect
+        mock_cur.fetchone.side_effect = fetchone_side_effect
+        mock_cur.fetchall.side_effect = fetchall_side_effect
+
+        res = import_project_excel(excel_bytes, self.sample_project_id)
+        self.assertTrue(res["success"])
+        rec = res["reconciliation"]
+        self.assertEqual(rec["updated"], 1)
+        self.assertEqual(rec["inserted"], 1)
+        self.assertEqual(rec["deleted"], 1)  # 99999999-... was omitted and deleted
+        self.assertEqual(rec["custom_fields_added"], 1)  # soil_density registered
+
+    @patch("services.excel_service.create_new_project")
+    def test_api_create_project_route(self, mock_create):
+        mock_create.return_value = {
+            "success": True,
+            "project": {"id": "123", "project_name": "Expressway Ph 1"},
+        }
+        resp = self.client.post(
+            "/api/projects/create",
+            json={"project_name": "Expressway Ph 1", "project_code": "EXP-01"},
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["project"]["project_name"], "Expressway Ph 1")
+
+    @patch("services.excel_service.import_project_excel")
+    def test_api_import_excel_route(self, mock_import):
+        mock_import.return_value = {
+            "success": True,
+            "project_id": self.sample_project_id,
+            "reconciliation": {"inserted": 2, "updated": 3, "deleted": 1, "custom_fields_added": 0},
+        }
+        fake_file = io.BytesIO(b"fake-xlsx-bytes")
+        resp = self.client.post(
+            f"/api/projects/{self.sample_project_id}/import_excel",
+            files={"file": ("test.xlsx", fake_file, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["reconciliation"]["inserted"], 2)
 
 
 if __name__ == "__main__":

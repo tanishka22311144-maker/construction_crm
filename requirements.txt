@@ -7,3 +7,4 @@ psycopg2-binary>=2.9.9
 pydantic
 typing_extensions
 openpyxl>=3.1.2
+python-multipart

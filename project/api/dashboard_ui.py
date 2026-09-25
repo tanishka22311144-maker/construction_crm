@@ -72,6 +72,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           <option value="">Loading projects...</option>
         </select>
       </div>
+
+      <button id="btnNewProject" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-sm">
+        <i class="fa-solid fa-plus"></i> New Project
+      </button>
     </div>
   </header>
 
@@ -141,6 +145,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
+          <input type="file" id="excelFileInput" accept=".xlsx" class="hidden" />
+          <button id="btnImportExcel" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-2 transition shadow-sm">
+            <i class="fa-solid fa-file-import"></i> Import .xlsx
+          </button>
           <button id="btnDownloadExcel" class="bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold px-3 py-2 rounded-lg border border-slate-700 flex items-center gap-2 transition">
             <i class="fa-solid fa-download text-emerald-400"></i> Download .xlsx
           </button>
@@ -195,6 +203,125 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     <span id="toastMsg">Synced</span>
   </div>
 
+  <!-- Modal: Create New Project -->
+  <div id="modalNewProject" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-folder-plus text-blue-400"></i> Create New Project
+        </h3>
+        <button id="btnCloseNewProject" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <form id="formNewProject" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">Project Name *</label>
+          <input type="text" id="inputNewProjectName" required placeholder="e.g. City Center Mall" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">Project Code</label>
+            <input type="text" id="inputNewProjectCode" placeholder="e.g. CCM-01" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-300 mb-1">Status</label>
+            <select id="selectNewProjectStatus" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 cursor-pointer">
+              <option value="active">Active</option>
+              <option value="planning">Planning</option>
+              <option value="completed">Completed</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">Location</label>
+          <input type="text" id="inputNewProjectLocation" placeholder="e.g. Downtown Sector 4" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+          <button type="button" id="btnCancelNewProject" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition">Cancel</button>
+          <button type="submit" id="btnSubmitNewProject" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition">
+            <i class="fa-solid fa-plus"></i> Create Project
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Import Excel Workbook -->
+  <div id="modalImportExcel" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-file-import text-indigo-400"></i> Import Excel Workbook (.xlsx)
+        </h3>
+        <button id="btnCloseImportExcel" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <!-- File Details -->
+      <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-3.5 flex items-center gap-3">
+        <div class="bg-emerald-950 border border-emerald-700/60 p-2.5 rounded-lg text-emerald-400 text-xl">
+          <i class="fa-solid fa-file-excel"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-semibold text-white truncate" id="importFileName">workbook.xlsx</div>
+          <div class="text-xs text-slate-400 mt-0.5" id="importFileSize">0 KB</div>
+        </div>
+      </div>
+
+      <!-- Reconcile Warning / Mode Selection -->
+      <div class="space-y-3">
+        <div class="text-xs text-slate-400">
+          Choose reconciliation mode for this workbook:
+        </div>
+
+        <div class="space-y-2">
+          <label class="flex items-start gap-3 p-3 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl cursor-pointer transition">
+            <input type="radio" name="importTargetMode" value="existing" checked class="mt-0.5 text-indigo-600 focus:ring-indigo-500" id="radioImportExisting" />
+            <div>
+              <div class="text-xs font-semibold text-white">Reconcile into Current Project (<span id="importCurrentProjectName">Current</span>)</div>
+              <p class="text-[11px] text-slate-400 mt-0.5">
+                Exact mirror: matching Record IDs update, new rows insert, omitted records in Supabase are deleted, and new custom columns are auto-registered.
+              </p>
+            </div>
+          </label>
+
+          <label class="flex items-start gap-3 p-3 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl cursor-pointer transition">
+            <input type="radio" name="importTargetMode" value="new" class="mt-0.5 text-indigo-600 focus:ring-indigo-500" id="radioImportNew" />
+            <div>
+              <div class="text-xs font-semibold text-white">Create as a New Project</div>
+              <p class="text-[11px] text-slate-400 mt-0.5">
+                Creates a brand new project record and imports all records & custom fields from the workbook sheets.
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <!-- Optional fields if New Project is selected -->
+        <div id="importNewProjectFields" class="hidden bg-slate-800/40 p-3 rounded-xl border border-slate-700/60 space-y-2">
+          <div>
+            <label class="block text-xs font-medium text-slate-300 mb-1">New Project Name (optional, defaults to workbook title)</label>
+            <input type="text" id="inputImportProjectName" placeholder="e.g. Metro Line Phase 2" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-300 mb-1">Project Code (optional)</label>
+            <input type="text" id="inputImportProjectCode" placeholder="e.g. MLP-02" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+        <button type="button" id="btnCancelImportExcel" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition">Cancel</button>
+        <button type="button" id="btnConfirmImportExcel" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition">
+          <i class="fa-solid fa-cloud-arrow-up"></i> Reconcile & Import
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Configuration
     const SUPABASE_URL = "{supabase_url}";
@@ -231,7 +358,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     }}
 
     // 1. Load Projects List
-    async function loadProjects() {{
+    async function loadProjects(preferredProjectId = null) {{
       try {{
         const res = await fetch(`${{API_BASE}}/projects`);
         const data = await res.json();
@@ -250,7 +377,13 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           selector.appendChild(opt);
         }});
 
-        currentProjectId = data.projects[0].id;
+        if (preferredProjectId && data.projects.some((p) => p.id === preferredProjectId)) {{
+          currentProjectId = preferredProjectId;
+        }} else if (currentProjectId && data.projects.some((p) => p.id === currentProjectId)) {{
+          // keep current selection
+        }} else {{
+          currentProjectId = data.projects[0].id;
+        }}
         selector.value = currentProjectId;
         await refreshProjectDashboard();
         initRealtimeSubscription();
@@ -817,8 +950,187 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         }});
     }}
 
+    // 12. Create New Project Modal Logic
+    const modalNewProject = document.getElementById("modalNewProject");
+    const btnNewProject = document.getElementById("btnNewProject");
+    const btnCloseNewProject = document.getElementById("btnCloseNewProject");
+    const btnCancelNewProject = document.getElementById("btnCancelNewProject");
+    const formNewProject = document.getElementById("formNewProject");
+    const btnSubmitNewProject = document.getElementById("btnSubmitNewProject");
+
+    if (btnNewProject) {{
+      btnNewProject.addEventListener("click", () => {{
+        document.getElementById("inputNewProjectName").value = "";
+        document.getElementById("inputNewProjectCode").value = "";
+        document.getElementById("inputNewProjectLocation").value = "";
+        document.getElementById("selectNewProjectStatus").value = "active";
+        modalNewProject.classList.remove("hidden");
+        document.getElementById("inputNewProjectName").focus();
+      }});
+    }}
+
+    const closeNewProjectModal = () => {{
+      modalNewProject.classList.add("hidden");
+    }};
+    if (btnCloseNewProject) btnCloseNewProject.addEventListener("click", closeNewProjectModal);
+    if (btnCancelNewProject) btnCancelNewProject.addEventListener("click", closeNewProjectModal);
+
+    if (formNewProject) {{
+      formNewProject.addEventListener("submit", async (e) => {{
+        e.preventDefault();
+        const name = document.getElementById("inputNewProjectName").value.trim();
+        const code = document.getElementById("inputNewProjectCode").value.trim();
+        const loc = document.getElementById("inputNewProjectLocation").value.trim();
+        const status = document.getElementById("selectNewProjectStatus").value;
+
+        if (!name) return;
+
+        btnSubmitNewProject.disabled = true;
+        btnSubmitNewProject.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creating...';
+
+        try {{
+          const res = await fetch(`${{API_BASE}}/projects/create`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{
+              project_name: name,
+              project_code: code || null,
+              location: loc || null,
+              status: status,
+            }}),
+          }});
+          const data = await res.json();
+          if (data.success && data.project) {{
+            showToast(`Project "${{data.project.project_name}}" created successfully!`);
+            closeNewProjectModal();
+            await loadProjects(data.project.id);
+          }} else {{
+            showToast("Failed to create project: " + (data.error || "Unknown error"), true);
+          }}
+        }} catch (err) {{
+          showToast("Error creating project: " + err.message, true);
+        }} finally {{
+          btnSubmitNewProject.disabled = false;
+          btnSubmitNewProject.innerHTML = '<i class="fa-solid fa-plus"></i> Create Project';
+        }}
+      }});
+    }}
+
+    // 13. Excel Import & Reconciliation Logic
+    const excelFileInput = document.getElementById("excelFileInput");
+    const btnImportExcel = document.getElementById("btnImportExcel");
+    const modalImportExcel = document.getElementById("modalImportExcel");
+    const btnCloseImportExcel = document.getElementById("btnCloseImportExcel");
+    const btnCancelImportExcel = document.getElementById("btnCancelImportExcel");
+    const btnConfirmImportExcel = document.getElementById("btnConfirmImportExcel");
+    const radioImportExisting = document.getElementById("radioImportExisting");
+    const radioImportNew = document.getElementById("radioImportNew");
+    const importNewProjectFields = document.getElementById("importNewProjectFields");
+
+    let selectedImportFile = null;
+
+    if (btnImportExcel && excelFileInput) {{
+      btnImportExcel.addEventListener("click", () => {{
+        excelFileInput.value = "";
+        excelFileInput.click();
+      }});
+
+      excelFileInput.addEventListener("change", (e) => {{
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        selectedImportFile = file;
+
+        document.getElementById("importFileName").textContent = file.name;
+        const sizeKb = (file.size / 1024).toFixed(1);
+        document.getElementById("importFileSize").textContent = `${{sizeKb}} KB`;
+
+        const currentProjOpt = document.getElementById("projectSelector").selectedOptions[0];
+        document.getElementById("importCurrentProjectName").textContent = currentProjOpt ? currentProjOpt.textContent : "Current";
+
+        radioImportExisting.checked = true;
+        importNewProjectFields.classList.add("hidden");
+        document.getElementById("inputImportProjectName").value = "";
+        document.getElementById("inputImportProjectCode").value = "";
+
+        modalImportExcel.classList.remove("hidden");
+      }});
+    }}
+
+    if (radioImportExisting) {{
+      radioImportExisting.addEventListener("change", () => {{
+        importNewProjectFields.classList.add("hidden");
+      }});
+    }}
+
+    if (radioImportNew) {{
+      radioImportNew.addEventListener("change", () => {{
+        importNewProjectFields.classList.remove("hidden");
+      }});
+    }}
+
+    const closeImportModal = () => {{
+      modalImportExcel.classList.add("hidden");
+      selectedImportFile = null;
+    }};
+    if (btnCloseImportExcel) btnCloseImportExcel.addEventListener("click", closeImportModal);
+    if (btnCancelImportExcel) btnCancelImportExcel.addEventListener("click", closeImportModal);
+
+    if (btnConfirmImportExcel) {{
+      btnConfirmImportExcel.addEventListener("click", async () => {{
+        if (!selectedImportFile) return;
+
+        const isNew = radioImportNew.checked;
+        btnConfirmImportExcel.disabled = true;
+        btnConfirmImportExcel.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Reconciling with Supabase...';
+
+        try {{
+          const formData = new FormData();
+          formData.append("file", selectedImportFile);
+
+          let url = "";
+          if (isNew) {{
+            url = `${{API_BASE}}/projects/import_new`;
+            const pName = document.getElementById("inputImportProjectName").value.trim();
+            const pCode = document.getElementById("inputImportProjectCode").value.trim();
+            if (pName) formData.append("project_name", pName);
+            if (pCode) formData.append("project_code", pCode);
+          }} else {{
+            if (!currentProjectId) {{
+              showToast("No active project selected to reconcile into.", true);
+              btnConfirmImportExcel.disabled = false;
+              btnConfirmImportExcel.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i> Reconcile & Import';
+              return;
+            }}
+            url = `${{API_BASE}}/projects/${{currentProjectId}}/import_excel`;
+          }}
+
+          const res = await fetch(url, {{
+            method: "POST",
+            body: formData,
+          }});
+          const data = await res.json();
+
+          if (data.success) {{
+            const rec = data.reconciliation || {{}};
+            const msg = `Reconciliation Complete: ${{rec.inserted || 0}} added, ${{rec.updated || 0}} updated, ${{rec.deleted || 0}} deleted, ${{rec.custom_fields_added || 0}} new custom fields.`;
+            showToast(msg);
+            closeImportModal();
+            const targetProjId = data.project_id || currentProjectId;
+            await loadProjects(targetProjId);
+          }} else {{
+            showToast("Import failed: " + (data.error || "Unknown error"), true);
+          }}
+        }} catch (err) {{
+          showToast("Error importing Excel: " + err.message, true);
+        }} finally {{
+          btnConfirmImportExcel.disabled = false;
+          btnConfirmImportExcel.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i> Reconcile & Import';
+        }}
+      }});
+    }}
+
     // Initialize on load
-    window.addEventListener("DOMContentLoaded", loadProjects);
+    window.addEventListener("DOMContentLoaded", () => loadProjects());
   </script>
 </body>
 </html>
