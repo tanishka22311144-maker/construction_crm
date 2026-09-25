@@ -213,6 +213,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     let spreadsheetData = null;
     let currentSheetType = "daily_log";
     let chartInstance = null;
+    let isLocalSyncing = false;
 
     // Toast helper
     function showToast(message, isError = false) {{
@@ -471,9 +472,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
 
       sheet.rows.forEach((row, rowIdx) => {{
         const tr = document.createElement("tr");
-        tr.className = "hover:bg-slate-900/60 transition";
+        tr.className = (row._dirty ? "bg-blue-900/30 " : "") + "hover:bg-slate-900/60 transition";
         tr.dataset.rowId = row.id || "";
         tr.dataset.rowIdx = rowIdx;
+        tr.dataset.dirty = row._dirty ? "true" : "false";
 
         // ID cell
         const tdId = document.createElement("td");
@@ -493,11 +495,19 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           if (val === undefined || val === null) val = "";
           td.textContent = val;
 
-          // On cell blur, auto-save / stage edit
+          // Input listener: capture user typing immediately, mark row dirty & highlight
+          td.addEventListener("input", (e) => {{
+            const rawVal = e.target.textContent.trim();
+            row[col.name] = col.type === "numeric" ? (rawVal === "" ? null : parseFloat(rawVal)) : rawVal;
+            row._dirty = true;
+            tr.dataset.dirty = "true";
+            tr.classList.add("bg-blue-900/30");
+          }});
+
+          // Blur listener: ensure value is committed to row
           td.addEventListener("blur", (e) => {{
-            const newVal = e.target.textContent.trim();
-            row[col.name] = col.type === "numeric" ? (newVal === "" ? null : parseFloat(newVal)) : newVal;
-            saveRow(row, tr);
+            const rawVal = e.target.textContent.trim();
+            row[col.name] = col.type === "numeric" ? (rawVal === "" ? null : parseFloat(rawVal)) : rawVal;
           }});
 
           tr.appendChild(td);
@@ -507,9 +517,9 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         const tdAct = document.createElement("td");
         tdAct.className = "px-3 py-2 text-right";
         const btnSave = document.createElement("button");
-        btnSave.className = "text-blue-400 hover:text-blue-300 text-xs";
+        btnSave.className = "text-blue-400 hover:text-blue-300 text-xs px-2 py-1 rounded hover:bg-slate-800 transition";
         btnSave.innerHTML = '<i class="fa-solid fa-check"></i>';
-        btnSave.title = "Save row to Supabase";
+        btnSave.title = "Save this row to Supabase";
         btnSave.addEventListener("click", () => saveRow(row, tr));
         tdAct.appendChild(btnSave);
         tr.appendChild(tdAct);
@@ -524,12 +534,25 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
 
     // 5. Save Single Row to Supabase (Excel -> Supabase sync)
     async function saveRow(row, trElement = null) {{
+      isLocalSyncing = true;
       try {{
+        if (trElement) {{
+          trElement.querySelectorAll(".editable-cell").forEach((cell) => {{
+            const cName = cell.dataset.colName;
+            const cType = cell.dataset.colType;
+            const txt = cell.textContent.trim();
+            row[cName] = cType === "numeric" ? (txt === "" ? null : parseFloat(txt)) : txt;
+          }});
+        }}
+
         const payload = {{
-          id: row.id || undefined,
           record_type: currentSheetType,
           ...row,
         }};
+        delete payload._dirty;
+        if (!payload.id || payload.id === "" || payload.id === "NEW") {{
+          delete payload.id;
+        }}
 
         const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/sync_row`, {{
           method: "POST",
@@ -538,10 +561,13 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         }});
 
         const result = await res.json();
-        if (result.success) {{
+        if (result.success && result.record) {{
           row.id = result.record.id;
+          row._dirty = false;
           if (trElement) {{
             trElement.dataset.rowId = result.record.id;
+            trElement.dataset.dirty = "false";
+            trElement.classList.remove("bg-blue-900/30");
             const idCell = trElement.querySelector("td");
             if (idCell) {{
               idCell.textContent = result.record.id.substring(0, 8) + '...';
@@ -549,13 +575,17 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           }}
           showToast(`Row "${{result.record.title || 'Entry'}}" synced to Supabase`);
           updateTabBadges();
-          loadPredictionData(); // refresh prediction curve with new data
+          loadPredictionData();
         }} else {{
           showToast("Sync error: " + (result.error || "Failed"), true);
         }}
       }} catch (err) {{
         console.error("Save row failed:", err);
         showToast("Error syncing row: " + err.message, true);
+      }} finally {{
+        setTimeout(() => {{
+          isLocalSyncing = false;
+        }}, 1500);
       }}
     }}
 
@@ -571,6 +601,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         record_date: new Date().toISOString().substring(0, 10),
         title: "New Entry",
         description: "",
+        _dirty: true,
       }};
 
       sheet.columns.forEach((c) => {{
@@ -582,7 +613,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       sheet.rows.unshift(newRow);
       renderSpreadsheet();
       updateTabBadges();
-      showToast("Added new row — edit cells and click checkmark or 'Sync to Supabase'");
+      showToast("Added new row — edit cells and click 'Sync to Supabase'");
     }});
 
     // 7. Sync to Supabase Button (Batch / Whole-Sheet Sync)
@@ -593,48 +624,67 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
 
       const btn = document.getElementById("btnSaveSheet");
       const origHtml = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
 
+      // 1. Gather all latest values from DOM cells into sheet.rows and detect dirty rows
       const tbody = document.getElementById("tableBody");
-      const trs = tbody.querySelectorAll("tr");
-      
-      if (trs.length === 0) {{
-        showToast("No rows to sync in this sheet.");
-        btn.disabled = false;
-        btn.innerHTML = origHtml;
+      const trs = Array.from(tbody.querySelectorAll("tr"));
+
+      trs.forEach((tr) => {{
+        const rowIdx = parseInt(tr.dataset.rowIdx, 10);
+        const row = sheet.rows[rowIdx];
+        if (!row) return;
+
+        tr.querySelectorAll(".editable-cell").forEach((cell) => {{
+          const colName = cell.dataset.colName;
+          const colType = cell.dataset.colType;
+          const textVal = cell.textContent.trim();
+          const parsedVal = colType === "numeric" ? (textVal === "" ? null : parseFloat(textVal)) : textVal;
+          if (row[colName] !== parsedVal) {{
+            row[colName] = parsedVal;
+            row._dirty = true;
+            tr.dataset.dirty = "true";
+          }}
+        }});
+      }});
+
+      // 2. Filter to rows that need syncing (dirty rows or unsaved/new rows)
+      let rowsToSync = [];
+      trs.forEach((tr) => {{
+        const rowIdx = parseInt(tr.dataset.rowIdx, 10);
+        const row = sheet.rows[rowIdx];
+        if (!row) return;
+        if (row._dirty || !row.id || row.id === "" || row.id === "NEW") {{
+          rowsToSync.push({{ row, tr }});
+        }}
+      }});
+
+      if (rowsToSync.length === 0) {{
+        showToast("All rows are already synchronized with Supabase.");
         return;
       }}
 
-      showToast(`Syncing ${{trs.length}} row${{trs.length > 1 ? 's' : ''}} to Supabase...`);
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
+      isLocalSyncing = true;
+      showToast(`Syncing ${{rowsToSync.length}} row${{rowsToSync.length > 1 ? 's' : ''}} to Supabase...`);
 
       let successCount = 0;
       let failCount = 0;
       let firstError = "";
 
-      for (const tr of trs) {{
-        const rowIdx = parseInt(tr.dataset.rowIdx, 10);
-        const row = sheet.rows[rowIdx];
-        if (!row) continue;
-
-        // Gather latest values directly from DOM editable cells
-        tr.querySelectorAll(".editable-cell").forEach((cell) => {{
-          const colName = cell.dataset.colName;
-          const colType = cell.dataset.colType;
-          const textVal = cell.textContent.trim();
-          if (colType === "numeric") {{
-            row[colName] = textVal === "" ? null : parseFloat(textVal);
-          }} else {{
-            row[colName] = textVal;
-          }}
-        }});
+      for (const item of rowsToSync) {{
+        const row = item.row;
+        const tr = item.tr;
 
         try {{
           const payload = {{
-            id: row.id || undefined,
             record_type: currentSheetType,
             ...row,
           }};
+          delete payload._dirty;
+          if (!payload.id || payload.id === "" || payload.id === "NEW") {{
+            delete payload.id;
+          }}
 
           const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/sync_row`, {{
             method: "POST",
@@ -645,7 +695,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           const result = await res.json();
           if (result.success && result.record) {{
             row.id = result.record.id;
+            row._dirty = false;
             tr.dataset.rowId = result.record.id;
+            tr.dataset.dirty = "false";
+            tr.classList.remove("bg-blue-900/30");
             const idCell = tr.querySelector("td");
             if (idCell) {{
               idCell.textContent = result.record.id.substring(0, 8) + '...';
@@ -661,6 +714,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           if (!firstError) firstError = e.message;
         }}
       }}
+
+      setTimeout(() => {{
+        isLocalSyncing = false;
+      }}, 1500);
 
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -722,6 +779,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           }},
           (payload) => {{
             console.log("Realtime event received from Supabase:", payload);
+            if (isLocalSyncing) {{
+              console.log("Skipping realtime reload during local sync");
+              return;
+            }}
             showToast(`Real-time update from Supabase (${{payload.eventType}})`);
             refreshProjectDashboard();
           }}
@@ -736,6 +797,9 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           }},
           (payload) => {{
             console.log("Realtime field definitions update:", payload);
+            if (isLocalSyncing) {{
+              return;
+            }}
             showToast(`Custom fields updated (${{payload.eventType}})`);
             refreshProjectDashboard();
           }}
