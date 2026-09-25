@@ -4,9 +4,11 @@
 > - Stage 1: Complete and verified.
 > - Stage 2: Complete and verified.
 > - Stage 3: Complete and verified.
-> - Stage 4: Build complete — applied migrations `20260101000700` (`agent_runs`, `agent_events`) and `20260101000900` (`processed_messages`), implemented webhook deduplication in `api/index.py`, added multi-turn conversation memory loading and turn recording in `chat_sessions`, wired Postgres checkpointer configuration in `agent/graph.py`, and verified with automated test suites `test_audit.py` and `test_stage4_dedup_and_memory.py`.
+> - Stage 4: Complete and verified.
+> - Stage 5: Complete and verified (Write tools `add_project_row`, `create_project_field`, `create_project` with envelope & read-back verification).
+> - Stage 6: Complete and verified (WhatsApp-only approval flow, `pending_approvals` table, role checks, token hashing, and thread resumption).
 >
-> Work resumes at **Stage 5 Build — Add more tools (write: `add_project_row`, post-write verification, idempotency)**.
+> Work resumes at **Stage 7 Build — Web Dashboard & Real-Time Project Excel Engine (Work Prediction Graph, Dedicated Project Excels, Real-Time Bidirectional Sync)**.
 >
 > One thing carries forward that is *not* business as usual: Stage 1's
 > `agent/graph.py` is a plain Python for-loop over node functions
@@ -365,24 +367,51 @@ it early; it'd mean building `processed_messages` out of order.
 
 ---
 
-## Stage 7 — Analytics and Registration Dashboard
+## Stage 7 — Web Dashboard & Real-Time Project Excel Engine
 
-> Add a basic web dashboard (`dashboard.py`) providing project analytics and a self-serve WhatsApp number registration flow for new users.
+> Web dashboard providing work prediction graphs (expected vs. actual work vs. date) and a dedicated Excel workbook per project with real-time two-way sync with Supabase.
+
+### Requirements & Invariants
+
+1. **Work Prediction vs. Date Graph**:
+   - Visual S-curve / burn-up chart for each project plotting:
+     - **Expected / Planned Work**: Baseline schedule curve over time.
+     - **Actual Work Done**: Cumulative historical progress up to today (derived from `project_records`).
+     - **Predicted Work Forecast**: Extrapolated completion trajectory based on current velocity, visually indicating on-time, ahead, or delayed completion.
+2. **Dedicated Project Excels**:
+   - **Strict isolation: Only projects have Excels.** No other entities (users, approvals, audit logs) have Excels.
+   - Every project has its own distinct Excel workbook containing required core fields (`record_date`, `record_type`, `title`, `amount`, `unit`, `description`) plus dynamic custom fields defined in `project_field_definitions` for that project.
+   - Dashboard includes a "View Excel" button for each project that opens an interactive, live-editable spreadsheet interface (with `.xlsx` download support).
+   - As new projects are added (via WhatsApp or web), their dedicated Excel workbook is automatically instantiated.
+3. **Real-Time Two-Way Sync (Supabase ⇄ Excel)**:
+   - **Supabase ➔ Excel**: Any insert or update in `project_records` (e.g. from WhatsApp messages) immediately reflects in the project's Excel in real time without page reload.
+   - **Excel ➔ Supabase**: Any edits or new rows created in the Excel view are validated against `project_field_definitions` and written to Supabase in real time with post-write read-back verification.
 
 **Build**
 
-- Create `project/dashboard.py` (e.g., using Streamlit or a basic FastAPI frontend).
-- Implement a basic analytics view reading from `project_records` and `projects`.
-- Implement a user registration form: captures user details, WhatsApp number, and securely hashes it via `canonicalize_whatsapp_number` and `hash_whatsapp_number` before storing in `agent_users`.
-- Ensure registration endpoints enforce appropriate security (e.g., admin approval for new accounts or domain verification).
-- Configure deployment for the dashboard so it can run alongside the Vercel webhook function.
+- **Dashboard UI & Prediction Engine** (`project/api/dashboard.py` or `/dashboard` mounted in FastAPI):
+  - Responsive web interface with project selector dropdown, progress KPI cards, and project details.
+  - Work prediction calculation service (`services/prediction.py`) calculating planned S-curve, cumulative actual progress, and velocity forecasting.
+  - Interactive Chart.js graph rendering Planned Work vs. Actual Work Done vs. Predicted Forecast vs. Date.
+- **Dedicated Project Excel Service** (`services/excel_service.py`):
+  - Generates project-specific Excel workbook schemas with worksheets for `Daily Logs`, `Expenses`, and `Equipment Logs` (or unified project record view).
+  - Dynamically binds columns matching core attributes and custom project fields from `project_field_definitions`.
+  - Automatically initializes dedicated Excel schema when a project is added.
+- **In-Browser Interactive Excel Grid**:
+  - Embedded high-performance spreadsheet editor accessible via "View Excel" button on the dashboard for instant editing, formulas, and `.xlsx` export.
+- **Real-Time Bidirectional Sync**:
+  - WebSocket / Supabase Realtime subscription pushing Supabase table changes directly into the project Excel grid.
+  - REST/WebSocket sync endpoint (`/api/projects/{project_id}/sync_records`) writing Excel edits to Supabase with schema validation and read-back envelope verification.
 
 **Verify**
 
-- [ ] Run the dashboard locally and successfully load the analytics view.
-- [ ] Submit a new user registration via the dashboard UI.
-- [ ] Verify the new user appears in the `agent_users` table with the correct canonicalized `whatsapp_sender_hash`.
-- [ ] Have the new user send a WhatsApp message and confirm the agent resolves their identity correctly.
+- [ ] Load the dashboard web page locally; confirm project selector loads existing projects (*Metro Line Extension*, *mumbai metro phase 2*).
+- [ ] Confirm the Work Prediction graph renders Expected Work, Actual Work Done, and Forecasted lines against dates.
+- [ ] Confirm each project has its own dedicated Excel pre-populated with its specific core and custom fields; confirm no non-project tables have Excels.
+- [ ] Click "View Excel" on a project: confirm the interactive spreadsheet displays the project's records.
+- [ ] Add a record to Supabase (via WhatsApp `add_project_row` or SQL); confirm the new row appears in the project's Excel in real time without refreshing.
+- [ ] Edit a cell or add a row in the Excel spreadsheet view; confirm the update is saved to Supabase `project_records` in real time.
+- [ ] Propose and approve a new project; confirm its dedicated Excel workbook is automatically created and viewable from the dashboard.
 
 ---
 
