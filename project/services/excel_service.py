@@ -244,6 +244,12 @@ def sync_excel_row_to_supabase(
         return {"success": False, "error": f"Project {project_id} not found"}
 
     record_id = row_data.get("id") or row_data.get("record_id")
+    if record_id:
+        try:
+            import uuid
+            uuid.UUID(str(record_id))
+        except (ValueError, AttributeError):
+            record_id = None
     record_type = row_data.get("record_type")
     if record_type not in ("daily_log", "expense", "equipment_log"):
         return {"success": False, "error": f"Invalid record_type: '{record_type}'"}
@@ -295,7 +301,7 @@ def sync_excel_row_to_supabase(
                         description = %s,
                         amount = %s,
                         unit = %s,
-                        data = data || %s::jsonb,
+                        data = COALESCE(data, '{}'::jsonb) || %s::jsonb,
                         updated_at = now()
                     WHERE id = %s AND project_id = %s
                     RETURNING id, project_id, record_type, record_date, title, description, amount, unit, data

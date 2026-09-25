@@ -392,6 +392,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     }}
 
     // 4. Load & Render Project Dedicated Excel Spreadsheet
+    // 4. Load & Render Project Dedicated Excel Spreadsheet
     async function loadSpreadsheetData() {{
       try {{
         const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/spreadsheet`);
@@ -400,10 +401,38 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         document.getElementById("excelProjectTitle").textContent = 
           `${{spreadsheetData.project.project_name}} — Excel Workbook`;
 
+        updateTabBadges();
         renderSpreadsheet();
       }} catch (err) {{
         console.error("Failed to load spreadsheet data:", err);
       }}
+    }}
+
+    function updateTabBadges() {{
+      if (!spreadsheetData || !spreadsheetData.sheets) return;
+      document.querySelectorAll(".sheet-tab").forEach((tab) => {{
+        const sType = tab.dataset.sheet;
+        const s = spreadsheetData.sheets[sType];
+        const rowCount = s && s.rows ? s.rows.length : 0;
+        const customCols = s && s.columns ? s.columns.filter((c) => c.is_custom) : [];
+
+        let icon = "fa-regular fa-calendar-check";
+        let label = "Daily Logs";
+        if (sType === "expense") {{
+          icon = "fa-solid fa-receipt";
+          label = "Expenses";
+        }} else if (sType === "equipment_log") {{
+          icon = "fa-solid fa-truck-pickup";
+          label = "Equipment Logs";
+        }}
+
+        let badgeHtml = `<span class="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] bg-slate-700/80 text-slate-300">${{rowCount}}</span>`;
+        if (customCols.length > 0) {{
+          badgeHtml += `<span class="ml-1.5 px-1.5 py-0.5 rounded text-[10px] bg-purple-900/60 text-purple-300 border border-purple-700/60" title="Custom fields: ${{customCols.map((c) => c.title).join(', ')}}">${{customCols.length}} Custom</span>`;
+        }}
+
+        tab.innerHTML = `<i class="${{icon}} mr-1.5"></i> ${{label}} ${{badgeHtml}}`;
+      }});
     }}
 
     function renderSpreadsheet() {{
@@ -423,7 +452,11 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       sheet.columns.forEach((col) => {{
         const th = document.createElement("th");
         th.className = "px-3 py-2 text-slate-300 uppercase tracking-wider text-[11px]";
-        th.textContent = col.title + (col.required ? " *" : "");
+        if (col.is_custom) {{
+          th.innerHTML = `${{col.title}} <span class="ml-1 px-1.5 py-0.5 rounded text-[9px] bg-purple-900/70 text-purple-300 border border-purple-700 font-semibold normal-case">Custom</span>` + (col.required ? " *" : "");
+        }} else {{
+          th.textContent = col.title + (col.required ? " *" : "");
+        }}
         thead.appendChild(th);
       }});
 
@@ -463,8 +496,8 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           // On cell blur, auto-save / stage edit
           td.addEventListener("blur", (e) => {{
             const newVal = e.target.textContent.trim();
-            row[col.name] = newVal;
-            saveRow(row);
+            row[col.name] = col.type === "numeric" ? (newVal === "" ? null : parseFloat(newVal)) : newVal;
+            saveRow(row, tr);
           }});
 
           tr.appendChild(td);
@@ -477,18 +510,20 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         btnSave.className = "text-blue-400 hover:text-blue-300 text-xs";
         btnSave.innerHTML = '<i class="fa-solid fa-check"></i>';
         btnSave.title = "Save row to Supabase";
-        btnSave.addEventListener("click", () => saveRow(row));
+        btnSave.addEventListener("click", () => saveRow(row, tr));
         tdAct.appendChild(btnSave);
         tr.appendChild(tdAct);
 
         tbody.appendChild(tr);
       }});
 
-      document.getElementById("recordCountInfo").textContent = `${{sheet.rows.length}} rows loaded`;
+      const customNames = sheet.columns.filter((c) => c.is_custom).map((c) => c.title);
+      let customInfo = customNames.length ? ` • Custom fields: ${{customNames.join(', ')}}` : "";
+      document.getElementById("recordCountInfo").textContent = `${{sheet.rows.length}} rows loaded${{customInfo}}`;
     }}
 
-    // 5. Save Row to Supabase (Excel -> Supabase sync)
-    async function saveRow(row) {{
+    // 5. Save Single Row to Supabase (Excel -> Supabase sync)
+    async function saveRow(row, trElement = null) {{
       try {{
         const payload = {{
           id: row.id || undefined,
@@ -505,7 +540,15 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         const result = await res.json();
         if (result.success) {{
           row.id = result.record.id;
-          showToast(`Row ${{result.record.title || ''}} synced to Supabase`);
+          if (trElement) {{
+            trElement.dataset.rowId = result.record.id;
+            const idCell = trElement.querySelector("td");
+            if (idCell) {{
+              idCell.textContent = result.record.id.substring(0, 8) + '...';
+            }}
+          }}
+          showToast(`Row "${{result.record.title || 'Entry'}}" synced to Supabase`);
+          updateTabBadges();
           loadPredictionData(); // refresh prediction curve with new data
         }} else {{
           showToast("Sync error: " + (result.error || "Failed"), true);
@@ -531,21 +574,114 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       }};
 
       sheet.columns.forEach((c) => {{
-        if (!newRow[c.name]) newRow[c.name] = c.default || "";
+        if (newRow[c.name] === undefined) {{
+          newRow[c.name] = c.default !== undefined && c.default !== null ? c.default : "";
+        }}
       }});
 
       sheet.rows.unshift(newRow);
       renderSpreadsheet();
-      showToast("Added new row — enter values and click checkmark or click outside cell to sync");
+      updateTabBadges();
+      showToast("Added new row — edit cells and click checkmark or 'Sync to Supabase'");
     }});
 
-    // 7. Download Live .xlsx
+    // 7. Sync to Supabase Button (Batch / Whole-Sheet Sync)
+    document.getElementById("btnSaveSheet").addEventListener("click", async () => {{
+      if (!spreadsheetData) return;
+      const sheet = spreadsheetData.sheets[currentSheetType];
+      if (!sheet) return;
+
+      const btn = document.getElementById("btnSaveSheet");
+      const origHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
+
+      const tbody = document.getElementById("tableBody");
+      const trs = tbody.querySelectorAll("tr");
+      
+      if (trs.length === 0) {{
+        showToast("No rows to sync in this sheet.");
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+        return;
+      }}
+
+      showToast(`Syncing ${{trs.length}} row${{trs.length > 1 ? 's' : ''}} to Supabase...`);
+
+      let successCount = 0;
+      let failCount = 0;
+      let firstError = "";
+
+      for (const tr of trs) {{
+        const rowIdx = parseInt(tr.dataset.rowIdx, 10);
+        const row = sheet.rows[rowIdx];
+        if (!row) continue;
+
+        // Gather latest values directly from DOM editable cells
+        tr.querySelectorAll(".editable-cell").forEach((cell) => {{
+          const colName = cell.dataset.colName;
+          const colType = cell.dataset.colType;
+          const textVal = cell.textContent.trim();
+          if (colType === "numeric") {{
+            row[colName] = textVal === "" ? null : parseFloat(textVal);
+          }} else {{
+            row[colName] = textVal;
+          }}
+        }});
+
+        try {{
+          const payload = {{
+            id: row.id || undefined,
+            record_type: currentSheetType,
+            ...row,
+          }};
+
+          const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/sync_row`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify(payload),
+          }});
+
+          const result = await res.json();
+          if (result.success && result.record) {{
+            row.id = result.record.id;
+            tr.dataset.rowId = result.record.id;
+            const idCell = tr.querySelector("td");
+            if (idCell) {{
+              idCell.textContent = result.record.id.substring(0, 8) + '...';
+            }}
+            successCount++;
+          }} else {{
+            failCount++;
+            if (!firstError) firstError = result.error || "Save failed";
+          }}
+        }} catch (e) {{
+          console.error("Sync row error:", e);
+          failCount++;
+          if (!firstError) firstError = e.message;
+        }}
+      }}
+
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+
+      if (failCount > 0) {{
+        showToast(`Synced ${{successCount}} rows, ${{failCount}} failed: ${{firstError}}`, true);
+      }} else {{
+        showToast(`Successfully synced ${{successCount}} row${{successCount > 1 ? 's' : ''}} to Supabase!`);
+      }}
+
+      updateTabBadges();
+      loadPredictionData();
+    }});
+
+    // 8. Download Live .xlsx
     document.getElementById("btnDownloadExcel").addEventListener("click", () => {{
       if (!currentProjectId) return;
       window.location.href = `${{API_BASE}}/projects/${{currentProjectId}}/excel`;
     }});
 
-    // 8. Tab Navigation
+    // 9. Tab Navigation
     document.querySelectorAll(".sheet-tab").forEach((tab) => {{
       tab.addEventListener("click", (e) => {{
         document.querySelectorAll(".sheet-tab").forEach((t) => {{
@@ -558,14 +694,14 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       }});
     }});
 
-    // 9. Project Selector Change
+    // 10. Project Selector Change
     document.getElementById("projectSelector").addEventListener("change", (e) => {{
       currentProjectId = e.target.value;
       refreshProjectDashboard();
       initRealtimeSubscription();
     }});
 
-    // 10. Realtime Subscription (Supabase -> Excel live sync)
+    // 11. Realtime Subscription (Supabase -> Excel live sync)
     let activeChannel = null;
     function initRealtimeSubscription() {{
       if (!supabaseClient || !currentProjectId) return;
@@ -575,7 +711,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       }}
 
       activeChannel = supabaseClient
-        .channel(`public:project_records:${{currentProjectId}}`)
+        .channel(`public:${{currentProjectId}}`)
         .on(
           "postgres_changes",
           {{
@@ -587,7 +723,20 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           (payload) => {{
             console.log("Realtime event received from Supabase:", payload);
             showToast(`Real-time update from Supabase (${{payload.eventType}})`);
-            // Automatically refresh spreadsheet and prediction curve
+            refreshProjectDashboard();
+          }}
+        )
+        .on(
+          "postgres_changes",
+          {{
+            event: "*",
+            schema: "public",
+            table: "project_field_definitions",
+            filter: `project_id=eq.${{currentProjectId}}`,
+          }},
+          (payload) => {{
+            console.log("Realtime field definitions update:", payload);
+            showToast(`Custom fields updated (${{payload.eventType}})`);
             refreshProjectDashboard();
           }}
         )
