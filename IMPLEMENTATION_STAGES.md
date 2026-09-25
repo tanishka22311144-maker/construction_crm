@@ -386,13 +386,16 @@ it early; it'd mean building `processed_messages` out of order.
 3. **Real-Time Two-Way Sync (Supabase ⇄ Excel)**:
    - **Supabase ➔ Excel**: Any insert or update in `project_records` (e.g. from WhatsApp messages) immediately reflects in the project's Excel in real time without page reload.
    - **Excel ➔ Supabase**: Any edits or new rows created in the Excel view are validated against `project_field_definitions` and written to Supabase in real time with post-write read-back verification.
+4. **Co-located Deployment on Same Vercel Project**:
+   - The web dashboard runs directly inside the same Vercel deployment on the existing Python serverless function (`api/index.py`) via FastAPI routes and `vercel.json` rewrites, requiring zero extra infrastructure or separate hosting.
 
 **Build**
 
-- **Dashboard UI & Prediction Engine** (`project/api/dashboard.py` or `/dashboard` mounted in FastAPI):
+- **Dashboard UI & Prediction Engine** (`project/api/dashboard.py` mounted directly on `api/index.py` FastAPI app):
   - Responsive web interface with project selector dropdown, progress KPI cards, and project details.
   - Work prediction calculation service (`services/prediction.py`) calculating planned S-curve, cumulative actual progress, and velocity forecasting.
   - Interactive Chart.js graph rendering Planned Work vs. Actual Work Done vs. Predicted Forecast vs. Date.
+  - Configure `vercel.json` rewrites to route `/dashboard`, `/`, and project API endpoints to `api/index.py` on the same Vercel deployment.
 - **Dedicated Project Excel Service** (`services/excel_service.py`):
   - Generates project-specific Excel workbook schemas with worksheets for `Daily Logs`, `Expenses`, and `Equipment Logs` (or unified project record view).
   - Dynamically binds columns matching core attributes and custom project fields from `project_field_definitions`.
