@@ -866,10 +866,56 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     }});
 
     // 8. Download Live .xlsx
-    document.getElementById("btnDownloadExcel").addEventListener("click", () => {{
-      if (!currentProjectId) return;
-      window.location.href = `${{API_BASE}}/projects/${{currentProjectId}}/excel`;
-    }});
+    const btnDownloadExcel = document.getElementById("btnDownloadExcel");
+    if (btnDownloadExcel) {{
+      btnDownloadExcel.addEventListener("click", async () => {{
+        if (!currentProjectId) {{
+          showToast("Please select a project before downloading.", true);
+          return;
+        }}
+
+        const origHtml = btnDownloadExcel.innerHTML;
+        btnDownloadExcel.disabled = true;
+        btnDownloadExcel.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Downloading...';
+
+        try {{
+          const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/excel`);
+          if (!res.ok) {{
+            throw new Error(`Server returned status ${{res.status}}`);
+          }}
+
+          let filename = "project_records.xlsx";
+          const disposition = res.headers.get("Content-Disposition");
+          if (disposition && disposition.includes("filename=")) {{
+            const match = disposition.match(/filename="?([^";]+)"?/);
+            if (match && match[1]) filename = match[1];
+          }} else {{
+            const currentProjOpt = document.getElementById("projectSelector").selectedOptions[0];
+            if (currentProjOpt && currentProjOpt.textContent) {{
+              const safeCode = currentProjOpt.textContent.replace(/[^a-zA-Z0-9_-]/g, "_");
+              filename = `${{safeCode}}_records.xlsx`;
+            }}
+          }}
+
+          const blob = await res.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          showToast(`Downloaded ${{filename}}!`);
+        }} catch (err) {{
+          console.error("Download failed:", err);
+          showToast("Download failed: " + err.message, true);
+        }} finally {{
+          btnDownloadExcel.disabled = false;
+          btnDownloadExcel.innerHTML = origHtml;
+        }}
+      }});
+    }}
 
     // 9. Tab Navigation
     document.querySelectorAll(".sheet-tab").forEach((tab) => {{
