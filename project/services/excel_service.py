@@ -358,11 +358,36 @@ def sync_excel_row_to_supabase(
             }
 
 
+def generate_unique_project_code(cur, candidate_code: str) -> str:
+    """Ensure project_code is unique by checking existing projects and suffixing if necessary."""
+    base = (candidate_code or "").strip() or "PROJ"
+    m = re.match(r"^(.*?)[-_](\d+)$", base)
+    if m:
+        prefix = m.group(1)
+        start_num = int(m.group(2))
+    else:
+        prefix = base
+        start_num = 1
+
+    cur.execute("SELECT project_code FROM public.projects WHERE project_code = %s", (base,))
+    if not cur.fetchone():
+        return base
+
+    num = start_num + 1
+    while True:
+        candidate = f"{prefix}-{num:02d}" if len(str(num)) < 3 else f"{prefix}-{num}"
+        cur.execute("SELECT project_code FROM public.projects WHERE project_code = %s", (candidate,))
+        if not cur.fetchone():
+            return candidate
+        num += 1
+
+
 def create_new_project(
     project_name: str,
     project_code: Optional[str] = None,
     location: Optional[str] = None,
     status: str = "active",
+    auto_disambiguate_code: bool = False,
 ) -> Dict[str, Any]:
     """Create a new project in public.projects and initialize default custom field definitions."""
     name = str(project_name or "").strip()
@@ -382,6 +407,15 @@ def create_new_project(
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # Check for unique project_code constraint
+            cur.execute("SELECT id FROM public.projects WHERE project_code = %s", (code,))
+            existing = cur.fetchone()
+            if existing:
+                if auto_disambiguate_code or not project_code:
+                    code = generate_unique_project_code(cur, code)
+                else:
+                    raise ValueError(f"Project code '{code}' already exists. Please choose a different project code.")
+
             cur.execute(
                 """
                 INSERT INTO public.projects (project_name, project_code, location, status)
@@ -461,9 +495,9 @@ def import_project_excel(
                 parsed_code = m.group(2).strip()
 
     if not project_id:
-        p_name = parsed_name or "Imported Project"
-        p_code = parsed_code or "IMP-01"
-        res = create_new_project(p_name, p_code, location=location)
+        p_name = project_name or parsed_name or "Imported Project"
+        p_code = project_code or parsed_code or "IMP-01"
+        res = create_new_project(p_name, p_code, location=location, auto_disambiguate_code=True)
         project_id = res["project"]["id"]
         proj_info = res["project"]
     else:
@@ -475,13 +509,23 @@ def import_project_excel(
             raise ValueError(f"Project {project_id} not found")
         proj_info = dict(proj_rows[0])
 
+        # When reconciling into an existing project, do NOT overwrite the project's name or code
+        # with whatever banner text happened to be in the uploaded sheet.
+        # Only update metadata if caller explicitly passed them in function arguments.
         update_fields = {}
-        if parsed_name and parsed_name != proj_info.get("project_name"):
-            update_fields["project_name"] = parsed_name
-        if parsed_code and parsed_code != proj_info.get("project_code"):
-            update_fields["project_code"] = parsed_code
+        if project_name and project_name != proj_info.get("project_name"):
+            update_fields["project_name"] = project_name
         if location and location != proj_info.get("location"):
             update_fields["location"] = location
+        if project_code and project_code != proj_info.get("project_code"):
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM public.projects WHERE project_code = %s AND id != %s",
+                        (project_code, project_id),
+                    )
+                    if not cur.fetchone():
+                        update_fields["project_code"] = project_code
 
         if update_fields:
             set_clauses = [f"{k} = %s" for k in update_fields.keys()]

@@ -315,13 +315,25 @@ class TestStage7Dashboard(unittest.TestCase):
         mock_conn.__enter__.return_value = mock_conn
         mock_conn.cursor.return_value.__enter__.return_value = mock_cur
         mock_get_conn.return_value = mock_conn
-        mock_cur.fetchone.return_value = {
-            "id": "33333333-3333-3333-3333-333333333333",
-            "project_name": "Skyline Tower",
-            "project_code": "SKT-01",
-            "location": "Mumbai",
-            "status": "active",
-        }
+
+        last_query = [""]
+
+        def execute_side_effect(sql, params=None):
+            last_query[0] = " ".join(sql.split()).upper()
+
+        def fetchone_side_effect():
+            if "INSERT INTO PUBLIC.PROJECTS" in last_query[0]:
+                return {
+                    "id": "33333333-3333-3333-3333-333333333333",
+                    "project_name": "Skyline Tower",
+                    "project_code": "SKT-01",
+                    "location": "Mumbai",
+                    "status": "active",
+                }
+            return None
+
+        mock_cur.execute.side_effect = execute_side_effect
+        mock_cur.fetchone.side_effect = fetchone_side_effect
 
         res = create_new_project("Skyline Tower", "SKT-01", "Mumbai", "active")
         self.assertTrue(res["success"])
@@ -436,6 +448,68 @@ class TestStage7Dashboard(unittest.TestCase):
         data = resp.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["reconciliation"]["inserted"], 2)
+
+    @patch("services.excel_service.execute_query")
+    @patch("services.excel_service.get_db_connection")
+    def test_import_project_excel_preserves_existing_project_code(self, mock_get_conn, mock_query):
+        # Target project in DB has code 'HCP' (Halloween Party)
+        target_project = {
+            "id": "4da15106-798c-4339-b5c7-421c2eb775b2",
+            "project_name": "Halloween Party",
+            "project_code": "HCP",
+            "location": "Warehouse",
+            "status": "active",
+        }
+
+        def query_side_effect(sql, params=None):
+            sql_clean = " ".join(sql.split()).upper()
+            if "FROM PUBLIC.PROJECTS" in sql_clean:
+                return [target_project]
+            if "FROM PUBLIC.PROJECT_FIELD_DEFINITIONS" in sql_clean:
+                return self.sample_custom_fields
+            return []
+
+        mock_query.side_effect = query_side_effect
+
+        # Excel has banner from different project: 'Metro Line Extension (MLE-01) — Daily Logs'
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Daily Logs"
+        ws["A1"] = "Metro Line Extension (MLE-01) — Daily Logs"
+        ws.append(["Record ID", "Date", "Title"])
+        ws.append(["", "2026-10-31", "Stage setup"])
+        out = io.BytesIO()
+        wb.save(out)
+        excel_bytes = out.getvalue()
+
+        mock_cur = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+
+        executed_sqls = []
+
+        def execute_side_effect(sql, params=None):
+            executed_sqls.append(" ".join(sql.split()).upper())
+
+        def fetchone_side_effect():
+            last = executed_sqls[-1] if executed_sqls else ""
+            if "INSERT INTO PUBLIC.PROJECT_RECORDS" in last:
+                return {"id": "88888888-8888-8888-8888-888888888888"}
+            return None
+
+        mock_cur.execute.side_effect = execute_side_effect
+        mock_cur.fetchone.side_effect = fetchone_side_effect
+        mock_cur.fetchall.return_value = []
+
+        res = import_project_excel(excel_bytes, target_project["id"])
+        self.assertTrue(res["success"])
+
+        # Crucial invariant: It should NEVER attempt UPDATE public.projects SET project_code = 'MLE-01'
+        for sql in executed_sqls:
+            self.assertNotIn("UPDATE PUBLIC.PROJECTS SET PROJECT_CODE", sql)
+            self.assertNotIn("MLE-01", sql)
 
 
 if __name__ == "__main__":
