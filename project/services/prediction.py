@@ -79,13 +79,14 @@ def calculate_project_prediction(
     if planned_end_date <= start_date:
         planned_end_date = start_date + timedelta(days=30)
 
-    # 3. Determine actual progress entries by date
-    # Check if records contain explicit progress indicators or compute cumulative progress
+    # 3. Determine actual progress entries by date based on daily_work_done sheet
+    daily_work_records = [
+        r for r in records if r.get("record_type") in ("daily_work_done", "daily_log")
+    ]
     date_to_progress: Dict[date, float] = {}
     max_record_date = start_date
 
-    # Group daily logs / records
-    for r in records:
+    for r in daily_work_records:
         r_date = r.get("record_date")
         if not r_date:
             continue
@@ -96,7 +97,7 @@ def calculate_project_prediction(
 
         data = r.get("data") or {}
         explicit_pct = None
-        for key in ("progress", "progress_pct", "percentage", "completion"):
+        for key in ("progress_pct", "progress_percentage", "progress", "percentage", "completion"):
             if key in data:
                 try:
                     explicit_pct = float(data[key])
@@ -107,24 +108,17 @@ def calculate_project_prediction(
         if explicit_pct is not None:
             date_to_progress[r_date] = max(date_to_progress.get(r_date, 0.0), explicit_pct)
 
-    # If no explicit progress percentages were provided in data JSON,
-    # estimate actual cumulative progress based on recorded daily logs and milestone cadence
     current_progress = 0.0
     if date_to_progress:
-        # Sort and take latest
         sorted_dates = sorted(date_to_progress.keys())
         current_progress = date_to_progress[sorted_dates[-1]]
     else:
-        # Synthesize realistic progress from count of activities and elapsed time
-        # E.g. each daily log represents work milestone, plus expense/equipment activity
-        daily_log_count = sum(1 for r in records if r.get("record_type") == "daily_log")
-        total_records_count = len(records)
+        # If no explicit progress percentages were recorded, estimate progress from daily_work_done entries
+        daily_work_count = len(daily_work_records)
         elapsed_days = max(1, (reference_date - start_date).days)
-        
-        # Base progress estimate: proportional to logged entries and elapsed timeline
-        if total_records_count > 0:
-            activity_weight = min(40.0, daily_log_count * 8.0 + total_records_count * 2.5)
-            time_weight = min(60.0, (elapsed_days / target_duration_days) * 70.0)
+        if daily_work_count > 0:
+            activity_weight = min(70.0, daily_work_count * 10.0)
+            time_weight = min(30.0, (elapsed_days / target_duration_days) * 30.0)
             current_progress = round(min(100.0, activity_weight + time_weight), 1)
         else:
             current_progress = 0.0
@@ -194,18 +188,8 @@ def calculate_project_prediction(
         else:
             actual_curve.append(None)
 
-        # Predicted work (starts at actual_as_of_date and goes forward)
-        if d < actual_as_of_date:
-            predicted_curve.append(None)
-        elif d == actual_as_of_date:
-            predicted_curve.append(current_progress)
-        elif d >= predicted_end_date:
-            predicted_curve.append(100.0)
-        else:
-            pred_days = (predicted_end_date - actual_as_of_date).days or 1
-            ratio = (d - actual_as_of_date).days / pred_days
-            val = current_progress + (100.0 - current_progress) * ratio
-            predicted_curve.append(round(min(100.0, val), 1))
+        # Predicted work line removed per user requirement (only actual work done kept)
+        predicted_curve.append(None)
 
     # Calculate status and variance
     t_ratio_today = min(1.0, max(0.0, (actual_as_of_date - start_date).days / total_planned_days))

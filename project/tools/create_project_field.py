@@ -11,7 +11,14 @@ from services.database import execute_query
 
 
 ALLOWED_FIELD_TYPES = {"text", "integer", "numeric", "boolean", "date", "enum"}
-ALLOWED_RECORD_TYPES = {"daily_log", "expense", "equipment_log"}
+ALLOWED_RECORD_TYPES = {
+    "material_procurement",
+    "expense",
+    "manpower_equipment",
+    "daily_work_done",
+    "daily_log",
+    "equipment_log",
+}
 
 
 def create_project_field(

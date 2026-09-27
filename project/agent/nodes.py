@@ -314,12 +314,13 @@ Available Tools:
 
 3. "create_project_field": Propose/create a new custom field definition for a project.
    Arguments:
-   - "record_type": "expense" | "daily_log" | "equipment_log"
-   - "field_name": string (snake_case, e.g. "workers_present", "material_supplier")
+   - "record_type": "material_procurement" | "expense" | "manpower_equipment" | "daily_work_done" | null
+   - "field_name": string (snake_case, e.g. "solderling_manpower", "supplier_tin")
    - "field_type": "text" | "integer" | "numeric" | "boolean" | "date" | "enum"
    - "required": boolean (default false)
    - "default_value": any or null
    - "validation_rules": dict or null
+   CRITICAL: For create_project_field, the user MUST specify the sheet from: Material Procurement, Expense, Manpower + Equipment, or Daily Work Done. DO NOT GUESS OR ASSUME. If the sheet is not specified (e.g. 'add field solderling manpower' without sheet), set "record_type" to null.
 
 4. "create_project": Propose/create a new construction project.
    Arguments:
@@ -402,12 +403,27 @@ Respond with ONLY a valid JSON object (no explanation, no markdown tags outside 
             if any(w in lower for w in ("create field", "add field", "new field", "propose field")):
                 intent = "write"
                 selected_tool = "create_project_field"
-                rec_type = "expense" if "expense" in lower else ("equipment_log" if "equipment" in lower else "daily_log")
-                f_type = "integer" if any(w in lower for w in ("int", "number", "count")) else ("boolean" if "bool" in lower else "text")
                 f_name = "custom_field"
-                name_match = re.search(r'(?:field|add)\s+([a-zA-Z_][a-zA-Z0-9_]*)', incoming, re.IGNORECASE)
-                if name_match and name_match.group(1).lower() not in ("field", "to", "for"):
-                    f_name = name_match.group(1).lower()
+                name_match = re.search(r'(?:field|add)\s+["\']?([a-zA-Z_][a-zA-Z0-9_\s]*)["\']?', incoming, re.IGNORECASE)
+                if name_match and name_match.group(1).lower().strip() not in ("field", "to", "for", "in"):
+                    f_name = re.sub(r"[^a-zA-Z0-9]+", "_", name_match.group(1).strip().lower()).strip("_")
+
+                # Remove field name or quoted string before searching for sheet name
+                clean_lower = re.sub(r'["\'].*?["\']', '', lower)
+                if f_name:
+                    clean_lower = clean_lower.replace(f_name.replace("_", " "), "")
+
+                rec_type = None
+                if any(w in clean_lower for w in ("material procurement", "procurement", "materials", "material")):
+                    rec_type = "material_procurement"
+                elif any(w in clean_lower for w in ("expense", "expenses")):
+                    rec_type = "expense"
+                elif any(w in clean_lower for w in ("manpower + equipment", "manpower & equipment", "manpower and equipment", "manpower", "equipment")):
+                    rec_type = "manpower_equipment"
+                elif any(w in clean_lower for w in ("daily work done", "work done", "daily work")):
+                    rec_type = "daily_work_done"
+
+                f_type = "integer" if any(w in lower for w in ("int", "number", "count")) else ("boolean" if "bool" in lower else "text")
                 tool_arguments = {"field_name": f_name, "field_type": f_type, "record_type": rec_type}
             elif any(w in lower for w in ("create project", "new project", "add project", "propose project", "create a project", "add a project", "create a new project", "add a new project")):
                 intent = "write"
@@ -586,6 +602,64 @@ def validate_plan(state: dict) -> dict:
             state["final_response"] = "I can only help query or add project records, or propose fields and projects. Other operations are not supported yet."
             _debug_log("validate_plan_unsupported_action", action=action)
             return state
+
+    # Ensure custom field creation explicitly specifies one of the 4 standard sheets without guessing
+    if state.get("selected_tool") == "create_project_field":
+        tool_args = state.get("tool_arguments") or {}
+        raw_rtype = (tool_args.get("record_type") or "").strip().lower()
+        sheet_map = {
+            "material_procurement": "material_procurement",
+            "material procurement": "material_procurement",
+            "procurement": "material_procurement",
+            "materials": "material_procurement",
+            "material": "material_procurement",
+            "expense": "expense",
+            "expenses": "expense",
+            "manpower_equipment": "manpower_equipment",
+            "manpower + equipment": "manpower_equipment",
+            "manpower & equipment": "manpower_equipment",
+            "manpower and equipment": "manpower_equipment",
+            "manpower": "manpower_equipment",
+            "equipment": "manpower_equipment",
+            "daily_work_done": "daily_work_done",
+            "daily work done": "daily_work_done",
+            "work done": "daily_work_done",
+            "daily work": "daily_work_done",
+            "daily_work": "daily_work_done",
+            "daily_log": "daily_work_done",
+            "daily log": "daily_work_done",
+            "equipment_log": "manpower_equipment",
+            "equipment log": "manpower_equipment",
+        }
+        normalized_rtype = sheet_map.get(raw_rtype)
+        if not normalized_rtype:
+            incoming = (state.get("incoming_message") or "").lower()
+            fname = (tool_args.get("field_name") or "").replace("_", " ").lower()
+            incoming_clean = re.sub(r'["\'].*?["\']', '', incoming)
+            if fname:
+                incoming_clean = incoming_clean.replace(fname, "")
+
+            if any(w in incoming_clean for w in ("material procurement", "procurement", "materials", "material")):
+                normalized_rtype = "material_procurement"
+            elif any(w in incoming_clean for w in ("expense", "expenses")):
+                normalized_rtype = "expense"
+            elif any(w in incoming_clean for w in ("manpower + equipment", "manpower & equipment", "manpower and equipment", "manpower", "equipment")):
+                normalized_rtype = "manpower_equipment"
+            elif any(w in incoming_clean for w in ("daily work done", "work done", "daily work")):
+                normalized_rtype = "daily_work_done"
+
+        if not normalized_rtype:
+            state["plan_valid"] = False
+            state["error_reason"] = "Target sheet not specified for field creation."
+            state["final_response"] = (
+                "Please specify which sheet this field belongs to: Material Procurement, "
+                "Expense, Manpower + Equipment, or Daily Work Done (e.g. 'add a field \"solderling manpower\" in manpower')."
+            )
+            _debug_log("validate_plan_missing_field_sheet")
+            return state
+
+        tool_args["record_type"] = normalized_rtype
+        state["tool_arguments"] = tool_args
 
     state["plan_valid"] = True
     _debug_log("validate_plan_success", steps=len(plan))

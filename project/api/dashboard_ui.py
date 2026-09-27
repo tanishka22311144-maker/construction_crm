@@ -115,15 +115,13 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
         <div>
           <h2 class="text-base font-semibold text-white flex items-center gap-2">
-            <i class="fa-solid fa-chart-line text-blue-400"></i>
-            Work Prediction vs. Date (Expected S-Curve vs. Actual vs. Forecast)
+            <i class="fa-solid fa-chart-line text-emerald-400"></i>
+            Actual Work Done vs. Date (Based on Daily Work Done)
           </h2>
-          <p class="text-xs text-slate-400">Comparison of planned baseline schedule, actual recorded progress, and velocity-projected completion</p>
+          <p class="text-xs text-slate-400">Cumulative progress curve calculated strictly from the Daily Work Done sheet</p>
         </div>
         <div class="flex items-center gap-3 text-xs">
-          <span class="flex items-center gap-1.5"><span class="w-3 h-1 bg-blue-500 inline-block rounded"></span> Planned S-Curve</span>
-          <span class="flex items-center gap-1.5"><span class="w-3 h-1 bg-emerald-500 inline-block rounded"></span> Actual Work Done</span>
-          <span class="flex items-center gap-1.5"><span class="w-3 h-1 border-t-2 border-dashed border-amber-400 inline-block"></span> Predicted Forecast</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-1.5 bg-emerald-500 inline-block rounded"></span> Actual Work Done</span>
         </div>
       </div>
       <div class="relative h-72 w-full">
@@ -163,14 +161,17 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
 
       <!-- Sheet Tabs -->
       <div class="flex space-x-2 border-b border-slate-800" id="sheetTabs">
-        <button class="sheet-tab px-4 py-2 text-xs font-semibold text-white border-b-2 border-blue-500 bg-slate-800/50 rounded-t-lg" data-sheet="daily_log">
-          <i class="fa-regular fa-calendar-check mr-1.5"></i> Daily Logs
+        <button class="sheet-tab px-4 py-2 text-xs font-semibold text-white border-b-2 border-blue-500 bg-slate-800/50 rounded-t-lg" data-sheet="material_procurement">
+          <i class="fa-solid fa-boxes-stacked mr-1.5"></i> Material Procurement
         </button>
         <button class="sheet-tab px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white border-b-2 border-transparent hover:border-slate-600 rounded-t-lg" data-sheet="expense">
-          <i class="fa-solid fa-receipt mr-1.5"></i> Expenses
+          <i class="fa-solid fa-receipt mr-1.5"></i> Expense
         </button>
-        <button class="sheet-tab px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white border-b-2 border-transparent hover:border-slate-600 rounded-t-lg" data-sheet="equipment_log">
-          <i class="fa-solid fa-truck-pickup mr-1.5"></i> Equipment Logs
+        <button class="sheet-tab px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white border-b-2 border-transparent hover:border-slate-600 rounded-t-lg" data-sheet="manpower_equipment">
+          <i class="fa-solid fa-person-digging mr-1.5"></i> Manpower + Equipment
+        </button>
+        <button class="sheet-tab px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white border-b-2 border-transparent hover:border-slate-600 rounded-t-lg" data-sheet="daily_work_done">
+          <i class="fa-regular fa-calendar-check mr-1.5"></i> Daily Work Done
         </button>
       </div>
 
@@ -338,7 +339,7 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     const API_BASE = "/api/index";
     let currentProjectId = "";
     let spreadsheetData = null;
-    let currentSheetType = "daily_log";
+    let currentSheetType = "material_procurement";
     let chartInstance = null;
     let isLocalSyncing = false;
 
@@ -450,16 +451,6 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           labels: dates,
           datasets: [
             {{
-              label: "Planned S-Curve (%)",
-              data: expected,
-              borderColor: "#3b82f6",
-              backgroundColor: "rgba(59, 130, 246, 0.1)",
-              borderWidth: 2,
-              tension: 0.3,
-              fill: false,
-              pointRadius: 0,
-            }},
-            {{
               label: "Actual Work Done (%)",
               data: actual,
               borderColor: "#10b981",
@@ -469,16 +460,6 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
               fill: true,
               pointRadius: 4,
               pointHoverRadius: 6,
-            }},
-            {{
-              label: "Predicted Forecast (%)",
-              data: predicted,
-              borderColor: "#f59e0b",
-              borderDash: [5, 5],
-              borderWidth: 2,
-              tension: 0.2,
-              fill: false,
-              pointRadius: 2,
             }},
           ],
         }},
@@ -535,6 +516,13 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         document.getElementById("excelProjectTitle").textContent = 
           `${{spreadsheetData.project.project_name}} — Excel Workbook`;
 
+        if (spreadsheetData && spreadsheetData.sheets && !spreadsheetData.sheets[currentSheetType]) {{
+          const sheetKeys = Object.keys(spreadsheetData.sheets);
+          if (sheetKeys.length > 0) {{
+            currentSheetType = sheetKeys[0];
+          }}
+        }}
+
         updateTabBadges();
         renderSpreadsheet();
       }} catch (err) {{
@@ -550,11 +538,20 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         const rowCount = s && s.rows ? s.rows.length : 0;
         const customCols = s && s.columns ? s.columns.filter((c) => c.is_custom) : [];
 
-        let icon = "fa-regular fa-calendar-check";
-        let label = "Daily Logs";
+        let icon = "fa-solid fa-boxes-stacked";
+        let label = "Material Procurement";
         if (sType === "expense") {{
           icon = "fa-solid fa-receipt";
-          label = "Expenses";
+          label = "Expense";
+        }} else if (sType === "manpower_equipment") {{
+          icon = "fa-solid fa-person-digging";
+          label = "Manpower + Equipment";
+        }} else if (sType === "daily_work_done") {{
+          icon = "fa-regular fa-calendar-check";
+          label = "Daily Work Done";
+        }} else if (sType === "daily_log") {{
+          icon = "fa-regular fa-calendar-check";
+          label = "Daily Logs";
         }} else if (sType === "equipment_log") {{
           icon = "fa-solid fa-truck-pickup";
           label = "Equipment Logs";
@@ -566,6 +563,12 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         }}
 
         tab.innerHTML = `<i class="${{icon}} mr-1.5"></i> ${{label}} ${{badgeHtml}}`;
+
+        if (sType === currentSheetType) {{
+          tab.className = "sheet-tab px-4 py-2 text-xs font-semibold text-white border-b-2 border-blue-500 bg-slate-800/50 rounded-t-lg";
+        }} else {{
+          tab.className = "sheet-tab px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white border-b-2 border-transparent hover:border-slate-600 rounded-t-lg";
+        }}
       }});
     }}
 
@@ -728,11 +731,17 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       const sheet = spreadsheetData.sheets[currentSheetType];
       if (!sheet) return;
 
+      let defaultTitle = "New Entry";
+      if (currentSheetType === "material_procurement") defaultTitle = "New Material";
+      else if (currentSheetType === "expense") defaultTitle = "New Expense";
+      else if (currentSheetType === "manpower_equipment") defaultTitle = "Shift Activity";
+      else if (currentSheetType === "daily_work_done") defaultTitle = "Daily Work Item";
+
       const newRow = {{
         id: "",
         record_type: currentSheetType,
         record_date: new Date().toISOString().substring(0, 10),
-        title: "New Entry",
+        title: defaultTitle,
         description: "",
         _dirty: true,
       }};

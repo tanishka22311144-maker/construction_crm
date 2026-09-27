@@ -13,7 +13,14 @@ from services.audit import check_write_idempotency
 from services.database import execute_query
 
 
-ALLOWED_RECORD_TYPES = {"daily_log", "expense", "equipment_log"}
+ALLOWED_RECORD_TYPES = {
+    "material_procurement",
+    "expense",
+    "manpower_equipment",
+    "daily_work_done",
+    "daily_log",
+    "equipment_log",
+}
 
 
 def add_project_row(

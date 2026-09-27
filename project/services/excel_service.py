@@ -22,12 +22,13 @@ from openpyxl.utils import get_column_letter
 from services.database import execute_query, get_db_connection
 
 
-# Core columns per record type
+# Core columns per record type (Date is always the primary column)
 CORE_FIELDS_BY_TYPE = {
-    "daily_log": [
+    "material_procurement": [
         {"name": "record_date", "title": "Date", "type": "date", "required": True},
-        {"name": "title", "title": "Log Title", "type": "text", "required": True},
-        {"name": "description", "title": "Notes / Summary", "type": "text", "required": False},
+        {"name": "title", "title": "Item / Material", "type": "text", "required": True},
+        {"name": "amount", "title": "Total Cost", "type": "numeric", "required": False},
+        {"name": "unit", "title": "Unit", "type": "text", "required": False, "default": "nos"},
     ],
     "expense": [
         {"name": "record_date", "title": "Date", "type": "date", "required": True},
@@ -36,12 +37,35 @@ CORE_FIELDS_BY_TYPE = {
         {"name": "unit", "title": "Currency / Unit", "type": "text", "required": False, "default": "INR"},
         {"name": "description", "title": "Description", "type": "text", "required": False},
     ],
+    "manpower_equipment": [
+        {"name": "record_date", "title": "Date", "type": "date", "required": True},
+        {"name": "title", "title": "Activity / Shift", "type": "text", "required": True},
+        {"name": "description", "title": "Notes", "type": "text", "required": False},
+    ],
+    "daily_work_done": [
+        {"name": "record_date", "title": "Date", "type": "date", "required": True},
+        {"name": "title", "title": "Work Description", "type": "text", "required": True},
+        {"name": "description", "title": "Remarks", "type": "text", "required": False},
+    ],
+    # Legacy compatibility
+    "daily_log": [
+        {"name": "record_date", "title": "Date", "type": "date", "required": True},
+        {"name": "title", "title": "Log Title", "type": "text", "required": True},
+        {"name": "description", "title": "Notes / Summary", "type": "text", "required": False},
+    ],
     "equipment_log": [
         {"name": "record_date", "title": "Date", "type": "date", "required": True},
         {"name": "title", "title": "Log Title", "type": "text", "required": True},
         {"name": "description", "title": "Operational Notes", "type": "text", "required": False},
     ],
 }
+
+STANDARD_SHEET_CONFIGS = [
+    ("material_procurement", "Material Procurement"),
+    ("expense", "Expense"),
+    ("manpower_equipment", "Manpower + Equipment"),
+    ("daily_work_done", "Daily Work Done"),
+]
 
 
 def get_project_fields(project_id: str) -> Dict[str, List[Dict[str, Any]]]:
@@ -57,8 +81,8 @@ def get_project_fields(project_id: str) -> Dict[str, List[Dict[str, Any]]]:
     )
 
     fields_by_type: Dict[str, List[Dict[str, Any]]] = {}
-    for rtype in ("daily_log", "expense", "equipment_log"):
-        fields_by_type[rtype] = [dict(f) for f in CORE_FIELDS_BY_TYPE[rtype]]
+    for rtype in ("material_procurement", "expense", "manpower_equipment", "daily_work_done", "daily_log", "equipment_log"):
+        fields_by_type[rtype] = [dict(f) for f in CORE_FIELDS_BY_TYPE.get(rtype, [])]
 
     for crow in custom_rows:
         rtype = crow["record_type"]
@@ -99,12 +123,16 @@ def get_project_spreadsheet_data(project_id: str) -> Dict[str, Any]:
         (project_id,),
     )
 
+    sheet_configs = list(STANDARD_SHEET_CONFIGS)
+    has_daily_log = any(r["record_type"] == "daily_log" for r in records)
+    has_equipment_log = any(r["record_type"] == "equipment_log" for r in records)
+    if has_daily_log:
+        sheet_configs.append(("daily_log", "Daily Logs"))
+    if has_equipment_log:
+        sheet_configs.append(("equipment_log", "Equipment Logs"))
+
     sheets_data: Dict[str, Any] = {}
-    for rtype, sheet_name in (
-        ("daily_log", "Daily Logs"),
-        ("expense", "Expenses"),
-        ("equipment_log", "Equipment Logs"),
-    ):
+    for rtype, sheet_name in sheet_configs:
         cols = fields_by_type.get(rtype, [])
         type_records = [r for r in records if r["record_type"] == rtype]
         
@@ -163,11 +191,10 @@ def generate_project_excel(project_id: str) -> bytes:
     border_thin = Side(border_style="thin", color="CBD5E1")
     cell_border = Border(top=border_thin, left=border_thin, right=border_thin, bottom=border_thin)
 
-    sheet_configs = [
-        ("daily_log", "Daily Logs"),
-        ("expense", "Expenses"),
-        ("equipment_log", "Equipment Logs"),
-    ]
+    sheet_configs = list(STANDARD_SHEET_CONFIGS)
+    for legacy_type, legacy_title in (("daily_log", "Daily Logs"), ("equipment_log", "Equipment Logs")):
+        if legacy_type in data.get("sheets", {}) and data["sheets"][legacy_type].get("rows"):
+            sheet_configs.append((legacy_type, legacy_title))
 
     for rtype, sheet_title in sheet_configs:
         sheet_info = data["sheets"].get(rtype, {})
@@ -428,12 +455,16 @@ def create_new_project(
             proj_id = str(proj["id"])
 
             default_fields = [
+                ("material_procurement", "quantity", "numeric"),
+                ("material_procurement", "supplier", "text"),
                 ("expense", "category", "text"),
                 ("expense", "payment_mode", "text"),
-                ("daily_log", "weather", "text"),
-                ("daily_log", "workers_count", "integer"),
-                ("equipment_log", "equipment_name", "text"),
-                ("equipment_log", "hours_operated", "numeric"),
+                ("manpower_equipment", "workers_count", "integer"),
+                ("manpower_equipment", "equipment_name", "text"),
+                ("manpower_equipment", "hours_operated", "numeric"),
+                ("manpower_equipment", "operator_name", "text"),
+                ("daily_work_done", "progress_pct", "numeric"),
+                ("daily_work_done", "weather", "text"),
             ]
             for rtype, fname, ftype in default_fields:
                 cur.execute(
@@ -541,17 +572,35 @@ def import_project_excel(
     proj_id = str(project_id)
 
     sheet_name_map = {
-        "daily log": "daily_log",
-        "daily logs": "daily_log",
-        "dailylog": "daily_log",
-        "dailylogs": "daily_log",
+        # Material Procurement
+        "material procurement": "material_procurement",
+        "material_procurement": "material_procurement",
+        "procurement": "material_procurement",
+        "materials": "material_procurement",
+        "material": "material_procurement",
+        # Expense
         "expense": "expense",
         "expenses": "expense",
-        "equipment log": "equipment_log",
-        "equipment logs": "equipment_log",
-        "equipmentlog": "equipment_log",
-        "equipmentlogs": "equipment_log",
-        "equipment": "equipment_log",
+        # Manpower + Equipment
+        "manpower + equipment": "manpower_equipment",
+        "manpower & equipment": "manpower_equipment",
+        "manpower and equipment": "manpower_equipment",
+        "manpower_equipment": "manpower_equipment",
+        "manpower": "manpower_equipment",
+        "equipment": "manpower_equipment",
+        "equipment log": "manpower_equipment",
+        "equipment logs": "manpower_equipment",
+        "equipmentlog": "manpower_equipment",
+        "equipmentlogs": "manpower_equipment",
+        # Daily Work Done
+        "daily work done": "daily_work_done",
+        "daily_work_done": "daily_work_done",
+        "work done": "daily_work_done",
+        "daily work": "daily_work_done",
+        "daily log": "daily_work_done",
+        "daily logs": "daily_work_done",
+        "dailylog": "daily_work_done",
+        "dailylogs": "daily_work_done",
     }
 
     created_records = 0
@@ -577,7 +626,7 @@ def import_project_excel(
         for r_idx in range(1, min(ws.max_row + 1, 10)):
             row_vals = [str(ws.cell(row=r_idx, column=c).value or "").strip() for c in range(1, ws.max_column + 1)]
             row_vals_lower = [v.lower() for v in row_vals]
-            if any(term in row_vals_lower for term in ("record id", "date", "log title", "expense title", "title", "amount")):
+            if any(term in row_vals_lower for term in ("record id", "date", "log title", "expense title", "title", "amount", "item", "work description")):
                 header_row_idx = r_idx
                 for c_idx in range(1, ws.max_column + 1):
                     val = ws.cell(row=r_idx, column=c_idx).value
@@ -594,14 +643,24 @@ def import_project_excel(
             "id": ("id", "uuid"),
             "date": ("record_date", "date"),
             "record date": ("record_date", "date"),
-            "log title": ("title", "text"),
+            "item / material": ("title", "text"),
+            "item": ("title", "text"),
+            "material": ("title", "text"),
             "expense title": ("title", "text"),
+            "activity / shift": ("title", "text"),
+            "activity": ("title", "text"),
+            "shift": ("title", "text"),
+            "work description": ("title", "text"),
+            "log title": ("title", "text"),
             "title": ("title", "text"),
             "description": ("description", "text"),
+            "remarks": ("description", "text"),
             "notes": ("description", "text"),
             "notes / summary": ("description", "text"),
             "operational notes": ("description", "text"),
             "amount": ("amount", "numeric"),
+            "total cost": ("amount", "numeric"),
+            "cost": ("amount", "numeric"),
             "currency / unit": ("unit", "text"),
             "unit": ("unit", "text"),
             "currency": ("unit", "text"),

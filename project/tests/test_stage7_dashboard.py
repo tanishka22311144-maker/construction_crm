@@ -142,9 +142,10 @@ class TestStage7Dashboard(unittest.TestCase):
 
         data = get_project_spreadsheet_data(self.sample_project_id)
         self.assertEqual(data["project"]["project_name"], "Metro Line Extension")
-        self.assertIn("daily_log", data["sheets"])
+        self.assertIn("material_procurement", data["sheets"])
         self.assertIn("expense", data["sheets"])
-        self.assertIn("equipment_log", data["sheets"])
+        self.assertIn("manpower_equipment", data["sheets"])
+        self.assertIn("daily_work_done", data["sheets"])
 
         # Check that custom field category is included in expense sheet
         expense_cols = [c["name"] for c in data["sheets"]["expense"]["columns"]]
@@ -180,12 +181,13 @@ class TestStage7Dashboard(unittest.TestCase):
         # Verify workbook can be read by openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
         sheet_names = wb.sheetnames
-        self.assertIn("Daily Logs", sheet_names)
-        self.assertIn("Expenses", sheet_names)
-        self.assertIn("Equipment Logs", sheet_names)
+        self.assertIn("Material Procurement", sheet_names)
+        self.assertIn("Expense", sheet_names)
+        self.assertIn("Manpower + Equipment", sheet_names)
+        self.assertIn("Daily Work Done", sheet_names)
 
-        # Verify Expenses sheet content
-        ws = wb["Expenses"]
+        # Verify Expense sheet content
+        ws = wb["Expense"]
         # Header row is at row 3
         headers = [ws.cell(row=3, column=c).value for c in range(1, 8) if ws.cell(row=3, column=c).value]
         self.assertIn("Amount", headers)
@@ -267,8 +269,10 @@ class TestStage7Dashboard(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/html", resp.headers["content-type"])
         self.assertIn("Construction CRM", resp.text)
-        self.assertIn("Work Prediction vs. Date", resp.text)
-        self.assertIn("Dedicated Project Excel", resp.text)
+        self.assertIn("Actual Work Done vs. Date", resp.text)
+        self.assertIn("Material Procurement", resp.text)
+        self.assertIn("Manpower + Equipment", resp.text)
+        self.assertIn("Daily Work Done", resp.text)
 
     @patch("services.database.execute_query")
     def test_api_projects_list(self, mock_query):
@@ -510,6 +514,34 @@ class TestStage7Dashboard(unittest.TestCase):
         for sql in executed_sqls:
             self.assertNotIn("UPDATE PUBLIC.PROJECTS SET PROJECT_CODE", sql)
             self.assertNotIn("MLE-01", sql)
+
+    def test_whatsapp_add_field_sheet_specification_rule(self):
+        """Verify WhatsApp agent enforces sheet specification for custom fields and never guesses."""
+        from agent.nodes import understand_request, create_plan, validate_plan
+
+        # Case 1: Sheet is NOT specified -> Agent must NOT guess, must ask clarification
+        state_no_sheet = {
+            "incoming_message": 'add a field "solderling manpower"',
+            "intent": "write",
+            "selected_tool": "create_project_field",
+            "tool_arguments": {"field_name": "solderling_manpower", "record_type": None},
+        }
+        create_plan(state_no_sheet)
+        validate_plan(state_no_sheet)
+        self.assertFalse(state_no_sheet.get("plan_valid"))
+        self.assertIn("Please specify which sheet this field belongs to", state_no_sheet.get("final_response", ""))
+
+        # Case 2: Sheet is explicitly specified as manpower -> Resolves to manpower_equipment and valid
+        state_with_sheet = {
+            "incoming_message": 'add a field "solderling manpower" in manpower',
+            "intent": "write",
+            "selected_tool": "create_project_field",
+            "tool_arguments": {"field_name": "solderling_manpower", "record_type": "manpower"},
+        }
+        create_plan(state_with_sheet)
+        validate_plan(state_with_sheet)
+        self.assertTrue(state_with_sheet.get("plan_valid"))
+        self.assertEqual(state_with_sheet["tool_arguments"]["record_type"], "manpower_equipment")
 
 
 if __name__ == "__main__":
