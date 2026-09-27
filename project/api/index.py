@@ -688,7 +688,7 @@ async def decide_approval_route(approval_id: str, request: Request):
     from services.database import get_db_connection
     from services.excel_service import create_new_project
 
-    with get_db_connection() as conn:
+    with get_db_connection(sender_hash=sender_hash) as conn:
         with conn.cursor() as cur:
             # 1. Verify approver has permissions
             cur.execute(
@@ -702,6 +702,9 @@ async def decide_approval_route(approval_id: str, request: Request):
             approver_role = approver["role"]
             if approver_role not in ("project_admin", "system_admin"):
                 return JSONResponse({"success": False, "error": "Only admins can approve requests"}, status_code=403)
+
+            from services.database import bind_request_context
+            bind_request_context(conn, sender_hash=sender_hash, user_id=str(approver["id"]))
 
             # 2. Lookup pending approval
             clean_id = approval_id.strip()
@@ -734,7 +737,7 @@ async def decide_approval_route(approval_id: str, request: Request):
             now = datetime.now(timezone.utc)
             new_status = "approved" if decision == "APPROVE" else "rejected"
 
-            # 3. Update pending_approvals record
+            # 3. Update pending_approvals record with read-back verification
             cur.execute(
                 """
                 UPDATE public.pending_approvals
@@ -744,9 +747,13 @@ async def decide_approval_route(approval_id: str, request: Request):
                     decided_by = %s,
                     decided_at = %s
                 WHERE id = %s
+                RETURNING id, status, decision
                 """,
                 (new_status, decision.lower(), reason, approver["id"], now, appr_id),
             )
+            updated_appr = cur.fetchone()
+            if not updated_appr:
+                return JSONResponse({"success": False, "error": f"Failed to update approval {clean_id} in database."}, status_code=500)
 
             # 4. If approved, execute the corresponding operation!
             execution_details = None
@@ -756,15 +763,26 @@ async def decide_approval_route(approval_id: str, request: Request):
                     p_code = payload.get("project_code")
                     p_loc = payload.get("location")
                     p_status = payload.get("status") or "active"
-                    res = create_new_project(
-                        project_name=p_name,
-                        project_code=p_code,
-                        location=p_loc,
-                        status=p_status,
-                        auto_disambiguate_code=True,
+
+                    # Check if project already exists to avoid duplicate projects
+                    cur.execute(
+                        "SELECT id, project_name, project_code FROM public.projects WHERE lower(project_name) = lower(%s) OR (project_code IS NOT NULL AND lower(project_code) = lower(%s)) LIMIT 1",
+                        (p_name, p_code or ""),
                     )
+                    existing_proj = cur.fetchone()
+                    if existing_proj:
+                        res = {"success": True, "project": dict(existing_proj), "message": "Project already exists"}
+                    else:
+                        res = create_new_project(
+                            project_name=p_name,
+                            project_code=p_code,
+                            location=p_loc,
+                            status=p_status,
+                            auto_disambiguate_code=True,
+                        )
                     execution_details = res
-                    if appr.get("requested_by") and res.get("project", {}).get("id"):
+                    target_proj_id = res.get("project", {}).get("id") or (existing_proj["id"] if existing_proj else None)
+                    if appr.get("requested_by") and target_proj_id:
                         try:
                             cur.execute(
                                 """
@@ -772,7 +790,7 @@ async def decide_approval_route(approval_id: str, request: Request):
                                 VALUES (%s, %s, 'project_admin')
                                 ON CONFLICT (user_id, project_id) DO NOTHING
                                 """,
-                                (appr["requested_by"], res["project"]["id"]),
+                                (appr["requested_by"], target_proj_id),
                             )
                         except Exception:
                             pass
@@ -802,6 +820,22 @@ async def decide_approval_route(approval_id: str, request: Request):
                             (proj_id, r_type, f_name, f_type, req),
                         )
                         execution_details = {"field": dict(cur.fetchone() or {})}
+
+                elif operation in ("add_project_row", "write"):
+                    from tools.add_project_row import add_project_row
+                    res = add_project_row(
+                        project_id=payload.get("project_id"),
+                        record_type=payload.get("record_type") or "expense",
+                        record_date=payload.get("record_date"),
+                        title=payload.get("title") or payload.get("expense_title") or "Expense",
+                        description=payload.get("description"),
+                        amount=payload.get("amount"),
+                        unit=payload.get("unit") or "INR",
+                        data=payload.get("data") or {},
+                        user_id=str(approver["id"]),
+                        sender_hash=sender_hash,
+                    )
+                    execution_details = res
 
     # 5. Optionally resume thread if thread_id exists
     thread_id = appr.get("thread_id")

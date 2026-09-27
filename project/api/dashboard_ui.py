@@ -1388,17 +1388,26 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
 
           approvalsListContainer.innerHTML = approvals.map(appr => {{
             const isProject = appr.operation === 'create_project';
-            const opBadge = isProject
-              ? '<span class="text-[10px] px-2 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700 font-semibold"><i class="fa-solid fa-folder-plus"></i> Project Creation</span>'
-              : '<span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-700 font-semibold"><i class="fa-solid fa-table-columns"></i> Custom Field</span>';
-
+            const isExpense = appr.operation === 'add_project_row' || appr.operation === 'write';
+            let opBadge = '';
             let detailsHtml = '';
+
             if (isProject) {{
+              opBadge = '<span class="text-[10px] px-2 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700 font-semibold"><i class="fa-solid fa-folder-plus"></i> Project Creation</span>';
               detailsHtml = `
                 <div class="text-sm font-bold text-white">${{appr.project_name}}</div>
                 <div class="text-xs text-slate-400 mt-0.5">Code: <span class="text-slate-200 font-mono">${{appr.project_code || 'Auto-generated'}}</span></div>
               `;
+            }} else if (isExpense) {{
+              opBadge = '<span class="text-[10px] px-2 py-0.5 rounded bg-amber-900/60 text-amber-300 border border-amber-700 font-semibold"><i class="fa-solid fa-receipt"></i> Expense Addition</span>';
+              const p = appr.proposed_payload || {{}};
+              const amtFormatted = Number(p.amount || 0).toLocaleString();
+              detailsHtml = `
+                <div class="text-sm font-bold text-white">${{p.title || 'Expense'}}: <span class="text-amber-300 font-mono">₹${{amtFormatted}}</span></div>
+                <div class="text-xs text-slate-400 mt-0.5">Project: <span class="text-slate-200">${{appr.project_name}}</span> &bull; Category: <span class="text-slate-200">${{(p.data && p.data.category) || p.category || 'General'}}</span></div>
+              `;
             }} else {{
+              opBadge = '<span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-700 font-semibold"><i class="fa-solid fa-table-columns"></i> Custom Field</span>';
               detailsHtml = `
                 <div class="text-sm font-bold text-white">Field: <span class="text-emerald-300 font-mono">${{appr.field_name}}</span></div>
                 <div class="text-xs text-slate-400 mt-0.5">Project: <span class="text-slate-200">${{appr.project_name}}</span> &bull; Target Sheet: <span class="text-slate-200 font-mono">${{appr.record_type || 'daily_work_done'}}</span></div>
@@ -1406,23 +1415,30 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
             }}
 
             return `
-              <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div class="space-y-1">
-                  <div class="flex items-center gap-2">
-                    ${{opBadge}}
-                    <span class="text-xs font-mono font-bold text-amber-400">${{appr.approval_code}}</span>
+              <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 flex flex-col gap-3">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div class="space-y-1">
+                    <div class="flex items-center gap-2">
+                      ${{opBadge}}
+                      <span class="text-xs font-mono font-bold text-amber-400">${{appr.approval_code}}</span>
+                    </div>
+                    ${{detailsHtml}}
+                    <div class="text-[11px] text-slate-500">Requested: ${{appr.requested_at ? new Date(appr.requested_at).toLocaleString() : 'Recently'}}</div>
                   </div>
-                  ${{detailsHtml}}
-                  <div class="text-[11px] text-slate-500">Requested: ${{appr.requested_at ? new Date(appr.requested_at).toLocaleString() : 'Recently'}}</div>
+
+                  <div class="flex items-center gap-2 shrink-0">
+                    <button onclick="handleApprovalDecision('${{appr.id}}', 'REJECT')" class="px-3.5 py-1.5 bg-rose-950/70 hover:bg-rose-900 border border-rose-800 text-rose-300 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition">
+                      <i class="fa-solid fa-xmark"></i> Reject
+                    </button>
+                    <button onclick="handleApprovalDecision('${{appr.id}}', 'APPROVE')" class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition shadow-sm">
+                      <i class="fa-solid fa-check"></i> Approve
+                    </button>
+                  </div>
                 </div>
 
-                <div class="flex items-center gap-2 shrink-0">
-                  <button onclick="handleApprovalDecision('${{appr.id}}', 'REJECT')" class="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition">
-                    <i class="fa-solid fa-xmark"></i> Reject
-                  </button>
-                  <button onclick="handleApprovalDecision('${{appr.id}}', 'APPROVE')" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shadow-sm">
-                    <i class="fa-solid fa-check"></i> Approve
-                  </button>
+                <!-- Comment / note input box -->
+                <div class="pt-2 border-t border-slate-700/60">
+                  <input type="text" id="comment_${{appr.id}}" placeholder="Add a comment / reason (optional)..." class="w-full bg-slate-900/90 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500" />
                 </div>
               </div>
             `;
@@ -1436,9 +1452,20 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     window.handleApprovalDecision = async function(approvalId, decision) {{
       if (!currentUser || !currentUser.sender_hash) {{
         showToast("Please log in with WhatsApp to approve or reject requests", true);
-        modalLogin.classList.remove("hidden");
+        if (modalLogin) modalLogin.classList.remove("hidden");
         return;
       }}
+
+      // Read comment/reason if entered
+      const commentEl = document.getElementById("comment_" + approvalId);
+      const userReason = commentEl ? commentEl.value.trim() : "";
+      const reason = userReason || (decision === "APPROVE" ? "Approved via Dashboard" : "Rejected via Dashboard");
+
+      // Auto-close approvals modal immediately on click per user requirement
+      if (modalApprovals) {{
+        modalApprovals.classList.add("hidden");
+      }}
+      showToast(`Processing ${{decision.toLowerCase()}} request...`);
 
       try {{
         const res = await fetch(`${{API_BASE}}/approvals/${{approvalId}}/decision`, {{
@@ -1450,18 +1477,21 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           body: JSON.stringify({{
             decision: decision,
             sender_hash: currentUser.sender_hash,
+            reason: reason,
           }}),
         }});
         const data = await res.json();
         if (data.success) {{
-          showToast(data.message || `Approval ${{decision.toLowerCase()}}d!`);
+          showToast(data.message || `Approval ${{decision.toLowerCase()}}d successfully!`);
           await loadPendingApprovals();
           await loadProjects();
         }} else {{
           showToast("Approval error: " + (data.error || "Unknown error"), true);
+          await loadPendingApprovals();
         }}
       }} catch (err) {{
         showToast("Network error: " + err.message, true);
+        await loadPendingApprovals();
       }}
     }};
 
