@@ -853,7 +853,7 @@ def delete_project(project_id: str) -> Dict[str, Any]:
 
             # Clean up pending approvals referencing this project if any
             try:
-                cur.execute("DELETE FROM public.pending_approvals WHERE project_id = %s", (project_id,))
+                cur.execute("DELETE FROM public.pending_approvals WHERE proposed_payload->>'project_id' = %s", (str(project_id),))
             except Exception:
                 pass
 
