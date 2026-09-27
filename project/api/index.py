@@ -754,6 +754,9 @@ async def decide_approval_route(approval_id: str, request: Request):
             updated_appr = cur.fetchone()
             if not updated_appr:
                 return JSONResponse({"success": False, "error": f"Failed to update approval {clean_id} in database."}, status_code=500)
+            
+            # Commit approval status immediately so it is permanently saved even if subsequent steps fail
+            conn.commit()
 
             # 4. If approved, execute the corresponding operation!
             execution_details = None
@@ -792,8 +795,9 @@ async def decide_approval_route(approval_id: str, request: Request):
                                 """,
                                 (appr["requested_by"], target_proj_id),
                             )
+                            conn.commit()
                         except Exception:
-                            pass
+                            conn.rollback()
 
                 elif operation == "create_project_field":
                     proj_id = payload.get("project_id")
