@@ -581,6 +581,119 @@ class TestStage7Dashboard(unittest.TestCase):
         self.assertTrue(state_with_sheet.get("plan_valid"))
         self.assertEqual(state_with_sheet["tool_arguments"]["record_type"], "manpower_equipment")
 
+    # 7. WhatsApp Auth & In-Dashboard Approvals Tests
+    @patch("services.database.get_db_connection")
+    def test_api_auth_login_bootstrap_new_user(self, mock_get_conn):
+        mock_cur = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+
+        # 1. Existing user check returns None (new user)
+        # 2. Insert returns newly created user with role project_admin
+        mock_cur.fetchone.side_effect = [
+            None,
+            {
+                "id": "aaaa1111-2222-3333-4444-555566667777",
+                "display_name": "Site Admin",
+                "role": "project_admin",
+                "is_active": True,
+                "created_at": datetime(2026, 9, 27, 10, 0, 0),
+            },
+        ]
+
+        resp = self.client.post(
+            "/api/auth/login",
+            json={"phone_number": "+918698510857", "display_name": "Site Admin"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["user"]["role"], "project_admin")
+        self.assertEqual(data["user"]["display_name"], "Site Admin")
+        self.assertTrue(len(data["user"]["sender_hash"]) > 20)
+
+    @patch("services.database.get_db_connection")
+    def test_api_approvals_pending_and_decision(self, mock_get_conn):
+        mock_cur = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+
+        # Test listing pending approvals
+        mock_cur.fetchall.return_value = [
+            {
+                "id": "f098973a-a99e-4efc-bb2f-2605f6f5263e",
+                "run_id": "run-1",
+                "thread_id": "thread-1",
+                "required_approver_role": "project_admin",
+                "operation": "create_project",
+                "proposed_payload": {
+                    "project_name": "Express Metro",
+                    "project_code": "EXP-01",
+                    "approval_code": "APR-F09897",
+                },
+                "status": "pending",
+                "requested_at": datetime(2026, 9, 27, 10, 0, 0),
+                "expires_at": datetime(2026, 9, 28, 10, 0, 0),
+                "requester_name": "Field Engineer",
+            }
+        ]
+
+        resp_list = self.client.get("/api/approvals/pending")
+        self.assertEqual(resp_list.status_code, 200)
+        data_list = resp_list.json()
+        self.assertTrue(data_list["success"])
+        self.assertEqual(len(data_list["approvals"]), 1)
+        self.assertEqual(data_list["approvals"][0]["project_name"], "Express Metro")
+
+        # Test approving the request
+        mock_cur.fetchone.side_effect = [
+            # 1. Approver lookup (admin role)
+            {
+                "id": "admin-1",
+                "display_name": "Admin User",
+                "role": "project_admin",
+            },
+            # 2. Pending approval lookup
+            {
+                "id": "f098973a-a99e-4efc-bb2f-2605f6f5263e",
+                "run_id": "run-1",
+                "thread_id": "thread-1",
+                "requested_by": "req-1",
+                "required_approver_role": "project_admin",
+                "operation": "create_project",
+                "proposed_payload": {
+                    "project_name": "Express Metro",
+                    "project_code": "EXP-01",
+                    "approval_code": "APR-F09897",
+                },
+                "status": "pending",
+                "expires_at": datetime(2026, 9, 28, 10, 0, 0),
+            },
+        ]
+
+        with patch("services.excel_service.create_new_project") as mock_create_p:
+            mock_create_p.return_value = {
+                "success": True,
+                "project": {"id": "p-100", "project_name": "Express Metro"},
+            }
+            resp_decide = self.client.post(
+                "/api/approvals/f098973a-a99e-4efc-bb2f-2605f6f5263e/decision",
+                json={
+                    "decision": "APPROVE",
+                    "sender_hash": "admin_sender_hash_123",
+                },
+            )
+            self.assertEqual(resp_decide.status_code, 200)
+            data_decide = resp_decide.json()
+            self.assertTrue(data_decide["success"])
+            self.assertEqual(data_decide["decision"], "APPROVE")
+            self.assertIn("approved", data_decide["message"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
+

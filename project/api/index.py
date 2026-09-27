@@ -3,6 +3,7 @@
 Handles webhook verification and executes the Stage 2 LangGraph StateGraph
 with read-only tool execution and session-variable RLS.
 """
+from datetime import datetime, date, timezone
 import json
 import os
 import uuid
@@ -506,6 +507,328 @@ async def import_new_project_route(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# --- WhatsApp Authentication & Self-Registration Endpoints ---
+
+@app.post("/api/auth/login")
+@app.post("/api/index/auth/login")
+async def auth_login(request: Request):
+    """Log in using a WhatsApp phone number.
+    If user is not yet in public.agent_users, auto-register as 'project_admin'.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+
+    phone = str(body.get("phone_number") or "").strip()
+    if not phone:
+        return JSONResponse({"success": False, "error": "Phone number is required"}, status_code=400)
+
+    from services.identity import canonicalize_whatsapp_number, hash_whatsapp_number
+    from services.database import get_db_connection
+
+    canonical = canonicalize_whatsapp_number(phone)
+    if not canonical:
+        return JSONResponse({"success": False, "error": "Invalid phone number format"}, status_code=400)
+
+    sender_hash = hash_whatsapp_number(canonical)
+    custom_name = str(body.get("display_name") or "").strip()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, display_name, role, is_active, created_at
+                FROM public.agent_users
+                WHERE whatsapp_sender_hash = %s
+                LIMIT 1
+                """,
+                (sender_hash,),
+            )
+            user_row = cur.fetchone()
+
+            if user_row:
+                user = dict(user_row)
+                if not user.get("is_active"):
+                    return JSONResponse({"success": False, "error": "User account is inactive"}, status_code=403)
+                if custom_name and custom_name != user.get("display_name"):
+                    cur.execute(
+                        "UPDATE public.agent_users SET display_name = %s WHERE id = %s",
+                        (custom_name, user["id"]),
+                    )
+                    user["display_name"] = custom_name
+            else:
+                display_name = custom_name or f"+{canonical}"
+                cur.execute(
+                    """
+                    INSERT INTO public.agent_users (whatsapp_sender_hash, display_name, role, is_active)
+                    VALUES (%s, %s, 'project_admin', true)
+                    RETURNING id, display_name, role, is_active, created_at
+                    """,
+                    (sender_hash, display_name),
+                )
+                user = dict(cur.fetchone())
+
+    masked_phone = f"+{canonical[:2]} {canonical[2:5]}***{canonical[-2:]}" if len(canonical) >= 7 else f"+{canonical}"
+    user["phone"] = f"+{canonical}"
+    user["phone_masked"] = masked_phone
+    user["sender_hash"] = sender_hash
+    if isinstance(user.get("created_at"), (datetime, date)):
+        user["created_at"] = user["created_at"].isoformat()
+    user["id"] = str(user["id"])
+
+    return JSONResponse({
+        "success": True,
+        "user": user,
+        "message": f"Logged in as {user.get('display_name')} ({user.get('role')})",
+    })
+
+
+@app.get("/api/auth/me")
+@app.get("/api/index/auth/me")
+async def auth_me(request: Request):
+    """Check current authenticated session."""
+    sender_hash = request.query_params.get("sender_hash") or request.headers.get("X-Sender-Hash")
+    if not sender_hash:
+        return JSONResponse({"success": False, "error": "Not authenticated"}, status_code=401)
+
+    from services.database import get_db_connection
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, display_name, role, is_active, created_at
+                FROM public.agent_users
+                WHERE whatsapp_sender_hash = %s AND is_active = true
+                LIMIT 1
+                """,
+                (sender_hash,),
+            )
+            user_row = cur.fetchone()
+            if not user_row:
+                return JSONResponse({"success": False, "error": "User not found or inactive"}, status_code=404)
+            user = dict(user_row)
+            user["id"] = str(user["id"])
+            if isinstance(user.get("created_at"), (datetime, date)):
+                user["created_at"] = user["created_at"].isoformat()
+            user["sender_hash"] = sender_hash
+            return JSONResponse({"success": True, "user": user})
+
+
+# --- Pending Approvals Management Endpoints ---
+
+@app.get("/api/approvals/pending")
+@app.get("/api/index/approvals/pending")
+async def list_pending_approvals():
+    """List all pending approvals for project and field creations."""
+    from services.database import get_db_connection
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT pa.id, pa.run_id, pa.thread_id, pa.required_approver_role,
+                       pa.operation, pa.proposed_payload, pa.status, pa.requested_at, pa.expires_at,
+                       u.display_name as requester_name
+                FROM public.pending_approvals pa
+                LEFT JOIN public.agent_users u ON u.id = pa.requested_by
+                WHERE pa.status = 'pending'
+                ORDER BY pa.requested_at DESC
+                """
+            )
+            rows = cur.fetchall()
+
+    approvals = []
+    for r in rows:
+        item = dict(r)
+        item["id"] = str(item["id"])
+        item["requested_at"] = item["requested_at"].isoformat() if item.get("requested_at") else None
+        item["expires_at"] = item["expires_at"].isoformat() if item.get("expires_at") else None
+        
+        payload = item.get("proposed_payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        
+        approval_code = payload.get("approval_code") or f"APR-{item['id'][:6].upper()}"
+        item["approval_code"] = approval_code
+        item["project_name"] = payload.get("project_name") or payload.get("name") or "General"
+        item["project_code"] = payload.get("project_code")
+        item["field_name"] = payload.get("field_name")
+        item["field_type"] = payload.get("field_type")
+        item["record_type"] = payload.get("record_type")
+        item["proposed_payload"] = payload
+        approvals.append(item)
+
+    return JSONResponse({"success": True, "approvals": approvals, "count": len(approvals)})
+
+
+@app.post("/api/approvals/{approval_id}/decision")
+@app.post("/api/index/approvals/{approval_id}/decision")
+async def decide_approval_route(approval_id: str, request: Request):
+    """Approve or reject a pending approval directly from the dashboard."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+
+    decision = str(body.get("decision") or "").strip().upper()
+    if decision not in ("APPROVE", "REJECT"):
+        return JSONResponse({"success": False, "error": "Decision must be APPROVE or REJECT"}, status_code=400)
+
+    sender_hash = body.get("sender_hash") or request.headers.get("X-Sender-Hash")
+    if not sender_hash:
+        return JSONResponse({"success": False, "error": "Authentication required to approve"}, status_code=401)
+
+    reason = str(body.get("reason") or ("Approved via Dashboard" if decision == "APPROVE" else "Rejected via Dashboard")).strip()
+
+    from services.database import get_db_connection
+    from services.excel_service import create_new_project
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # 1. Verify approver has permissions
+            cur.execute(
+                "SELECT id, display_name, role FROM public.agent_users WHERE whatsapp_sender_hash = %s AND is_active = true",
+                (sender_hash,),
+            )
+            approver = cur.fetchone()
+            if not approver:
+                return JSONResponse({"success": False, "error": "Approver not found or inactive"}, status_code=403)
+            
+            approver_role = approver["role"]
+            if approver_role not in ("project_admin", "system_admin"):
+                return JSONResponse({"success": False, "error": "Only admins can approve requests"}, status_code=403)
+
+            # 2. Lookup pending approval
+            clean_id = approval_id.strip()
+            cur.execute(
+                """
+                SELECT id, run_id, thread_id, requested_by, required_approver_role,
+                       operation, proposed_payload, status, expires_at
+                FROM public.pending_approvals
+                WHERE id = %s OR id::text LIKE %s
+                LIMIT 1
+                """,
+                (clean_id if len(clean_id) == 36 else None, f"{clean_id}%"),
+            )
+            appr = cur.fetchone()
+            if not appr:
+                return JSONResponse({"success": False, "error": "Approval request not found"}, status_code=404)
+            
+            if appr["status"] != "pending":
+                return JSONResponse({"success": False, "error": f"Approval is already {appr['status']}"}, status_code=400)
+
+            appr_id = appr["id"]
+            operation = appr["operation"]
+            payload = appr["proposed_payload"] or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+
+            now = datetime.now(timezone.utc)
+            new_status = "approved" if decision == "APPROVE" else "rejected"
+
+            # 3. Update pending_approvals record
+            cur.execute(
+                """
+                UPDATE public.pending_approvals
+                SET status = %s,
+                    decision = %s,
+                    decision_reason = %s,
+                    decided_by = %s,
+                    decided_at = %s
+                WHERE id = %s
+                """,
+                (new_status, decision.lower(), reason, approver["id"], now, appr_id),
+            )
+
+            # 4. If approved, execute the corresponding operation!
+            execution_details = None
+            if decision == "APPROVE":
+                if operation == "create_project":
+                    p_name = payload.get("project_name")
+                    p_code = payload.get("project_code")
+                    p_loc = payload.get("location")
+                    p_status = payload.get("status") or "active"
+                    res = create_new_project(
+                        project_name=p_name,
+                        project_code=p_code,
+                        location=p_loc,
+                        status=p_status,
+                        auto_disambiguate_code=True,
+                    )
+                    execution_details = res
+                    if appr.get("requested_by") and res.get("project", {}).get("id"):
+                        try:
+                            cur.execute(
+                                """
+                                INSERT INTO public.user_project_access (user_id, project_id, role)
+                                VALUES (%s, %s, 'project_admin')
+                                ON CONFLICT (user_id, project_id) DO NOTHING
+                                """,
+                                (appr["requested_by"], res["project"]["id"]),
+                            )
+                        except Exception:
+                            pass
+
+                elif operation == "create_project_field":
+                    proj_id = payload.get("project_id")
+                    if not proj_id and payload.get("project_name"):
+                        cur.execute("SELECT id FROM public.projects WHERE lower(project_name) = lower(%s) LIMIT 1", (payload["project_name"],))
+                        p_row = cur.fetchone()
+                        if p_row:
+                            proj_id = p_row["id"]
+                    
+                    if proj_id:
+                        f_name = payload.get("field_name")
+                        f_type = payload.get("field_type") or "text"
+                        r_type = payload.get("record_type") or "daily_work_done"
+                        req = bool(payload.get("required", False))
+                        cur.execute(
+                            """
+                            INSERT INTO public.project_field_definitions
+                                (project_id, record_type, field_name, field_type, required)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (project_id, record_type, field_name) DO UPDATE
+                            SET field_type = EXCLUDED.field_type
+                            RETURNING id, project_id, record_type, field_name, field_type
+                            """,
+                            (proj_id, r_type, f_name, f_type, req),
+                        )
+                        execution_details = {"field": dict(cur.fetchone() or {})}
+
+    # 5. Optionally resume thread if thread_id exists
+    thread_id = appr.get("thread_id")
+    if thread_id:
+        try:
+            from langgraph.types import Command
+            resume_cmd = Command(resume={
+                "decision": decision.lower(),
+                "decision_reason": reason,
+                "edited_payload": payload,
+            })
+            graph.invoke(
+                resume_cmd,
+                config={"configurable": {"thread_id": thread_id}},
+            )
+        except Exception as e:
+            print(f"[Approval Web Resume Warning] {e}", flush=True)
+
+    approval_code = payload.get("approval_code") or f"APR-{str(appr_id)[:6].upper()}"
+    return JSONResponse({
+        "success": True,
+        "approval_id": str(appr_id),
+        "approval_code": approval_code,
+        "decision": decision,
+        "message": f"Approval {approval_code} {decision.lower()}d successfully.",
+        "execution": execution_details,
+    })
 
 
 

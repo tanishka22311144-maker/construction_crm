@@ -1,6 +1,7 @@
 from project.services.excel_service import (
     CORE_FIELDS_BY_TYPE,
     create_new_project,
+    delete_project,
     generate_project_excel,
     get_project_fields,
     get_project_spreadsheet_data,
@@ -11,6 +12,7 @@ from project.services.excel_service import (
 __all__ = [
     "CORE_FIELDS_BY_TYPE",
     "create_new_project",
+    "delete_project",
     "get_project_fields",
     "get_project_spreadsheet_data",
     "generate_project_excel",

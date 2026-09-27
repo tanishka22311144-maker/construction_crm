@@ -79,6 +79,30 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       <button id="btnDeleteProject" class="bg-red-900/40 hover:bg-red-600 text-red-300 hover:text-white border border-red-700/60 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-sm" title="Delete current project">
         <i class="fa-solid fa-trash-can"></i> Delete Project
       </button>
+
+      <!-- Approvals Button with live badge -->
+      <button id="btnOpenApprovals" class="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-600/40 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-sm relative">
+        <i class="fa-solid fa-stamp"></i> Approvals
+        <span id="approvalsBadge" class="hidden px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-950 font-bold text-[10px]">0</span>
+      </button>
+
+      <!-- WhatsApp Authentication Controls -->
+      <div id="authContainer" class="flex items-center space-x-2">
+        <button id="btnLogin" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-sm">
+          <i class="fa-brands fa-whatsapp text-sm"></i> Login
+        </button>
+
+        <div id="userProfile" class="hidden flex items-center space-x-2">
+          <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-200 gap-1.5">
+            <i class="fa-brands fa-whatsapp text-emerald-400"></i>
+            <span id="userDisplayName" class="font-medium text-white max-w-[120px] truncate">User</span>
+            <span id="userRoleBadge" class="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700/60 font-semibold uppercase">Admin</span>
+          </div>
+          <button id="btnLogout" class="text-slate-400 hover:text-rose-400 text-xs px-1.5 py-1 transition" title="Log out">
+            <i class="fa-solid fa-right-from-bracket"></i>
+          </button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -281,6 +305,66 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         <button type="button" id="btnCancelDeleteProject" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition">Cancel</button>
         <button type="button" id="btnConfirmDeleteProject" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition">
           <i class="fa-solid fa-trash-can"></i> Permanently Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: WhatsApp Login -->
+  <div id="modalLogin" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-brands fa-whatsapp text-emerald-400 text-lg"></i> Login with WhatsApp
+        </h3>
+        <button id="btnCloseLogin" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <form id="formLogin" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">WhatsApp Phone Number *</label>
+          <input type="tel" id="inputLoginPhone" required placeholder="e.g. +91 86985 10857 or 8698510857" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+          <p class="text-[11px] text-slate-400 mt-1">
+            Enter your active WhatsApp number. New users are automatically registered as authorized Project Admins.
+          </p>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1">Display Name (Optional)</label>
+          <input type="text" id="inputLoginName" placeholder="e.g. Site Supervisor" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+          <button type="button" id="btnCancelLogin" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition">Cancel</button>
+          <button type="submit" id="btnSubmitLogin" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition">
+            <i class="fa-solid fa-arrow-right-to-bracket"></i> Login / Register
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Approvals Center -->
+  <div id="modalApprovals" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-stamp text-amber-400"></i> Pending Approvals Center
+        </h3>
+        <button id="btnCloseApprovals" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto space-y-3 pr-1" id="approvalsListContainer">
+        <div class="text-center py-8 text-slate-400 text-xs">Loading pending approvals...</div>
+      </div>
+
+      <div class="flex items-center justify-between pt-3 border-t border-slate-800 text-xs text-slate-400">
+        <span id="approvalsFooterCount">0 requests pending</span>
+        <button type="button" id="btnRefreshApprovals" class="text-blue-400 hover:text-blue-300 flex items-center gap-1">
+          <i class="fa-solid fa-rotate"></i> Refresh
         </button>
       </div>
     </div>
@@ -1144,17 +1228,24 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         btnConfirmDeleteProject.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting...';
 
         try {{
-          const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}`, {{
+          let res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}`, {{
             method: "DELETE",
           }});
-          const data = await res.json();
-          if (data.success) {{
+          if (!res.ok) {{
+            res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}/delete`, {{
+              method: "POST",
+            }});
+          }}
+          let data = null;
+          try {{ data = await res.json(); }} catch(e) {{}}
+          if (data && data.success) {{
             showToast("Project deleted successfully");
             closeDeleteModal();
             currentProjectId = "";
             await loadProjects();
           }} else {{
-            showToast("Failed to delete project: " + (data.error || "Unknown error"), true);
+            const errMsg = (data && (data.error || data.detail || data.message)) || `Server error (HTTP ${{res.status}})`;
+            showToast("Failed to delete project: " + errMsg, true);
           }}
         }} catch (err) {{
           showToast("Error deleting project: " + err.message, true);
@@ -1162,6 +1253,234 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
           btnConfirmDeleteProject.disabled = false;
           btnConfirmDeleteProject.innerHTML = '<i class="fa-solid fa-trash-can"></i> Permanently Delete';
         }}
+      }});
+    }}
+
+    // 12c. WhatsApp Auth & In-Dashboard Approvals Logic
+    let currentUser = null;
+    try {{
+      const saved = localStorage.getItem("crm_user");
+      if (saved) currentUser = JSON.parse(saved);
+    }} catch(e) {{}}
+
+    function updateAuthUI() {{
+      const btnLogin = document.getElementById("btnLogin");
+      const userProfile = document.getElementById("userProfile");
+      const userDisplayName = document.getElementById("userDisplayName");
+      const userRoleBadge = document.getElementById("userRoleBadge");
+
+      if (currentUser && currentUser.sender_hash) {{
+        if (btnLogin) btnLogin.classList.add("hidden");
+        if (userProfile) userProfile.classList.remove("hidden");
+        if (userDisplayName) userDisplayName.textContent = currentUser.display_name || currentUser.phone || "Admin";
+        if (userRoleBadge) userRoleBadge.textContent = currentUser.role || "Admin";
+      }} else {{
+        if (btnLogin) btnLogin.classList.remove("hidden");
+        if (userProfile) userProfile.classList.add("hidden");
+      }}
+    }}
+
+    const modalLogin = document.getElementById("modalLogin");
+    const btnLogin = document.getElementById("btnLogin");
+    const btnCloseLogin = document.getElementById("btnCloseLogin");
+    const btnCancelLogin = document.getElementById("btnCancelLogin");
+    const formLogin = document.getElementById("formLogin");
+    const btnLogout = document.getElementById("btnLogout");
+
+    const modalApprovals = document.getElementById("modalApprovals");
+    const btnOpenApprovals = document.getElementById("btnOpenApprovals");
+    const btnCloseApprovals = document.getElementById("btnCloseApprovals");
+    const btnRefreshApprovals = document.getElementById("btnRefreshApprovals");
+    const approvalsBadge = document.getElementById("approvalsBadge");
+    const approvalsListContainer = document.getElementById("approvalsListContainer");
+    const approvalsFooterCount = document.getElementById("approvalsFooterCount");
+
+    if (btnLogin) {{
+      btnLogin.addEventListener("click", () => {{
+        document.getElementById("inputLoginPhone").value = "";
+        document.getElementById("inputLoginName").value = "";
+        modalLogin.classList.remove("hidden");
+        document.getElementById("inputLoginPhone").focus();
+      }});
+    }}
+
+    const closeLoginModal = () => {{
+      modalLogin.classList.add("hidden");
+    }};
+    if (btnCloseLogin) btnCloseLogin.addEventListener("click", closeLoginModal);
+    if (btnCancelLogin) btnCancelLogin.addEventListener("click", closeLoginModal);
+
+    if (btnLogout) {{
+      btnLogout.addEventListener("click", () => {{
+        currentUser = null;
+        localStorage.removeItem("crm_user");
+        updateAuthUI();
+        showToast("Logged out successfully");
+      }});
+    }}
+
+    if (formLogin) {{
+      formLogin.addEventListener("submit", async (e) => {{
+        e.preventDefault();
+        const phone = document.getElementById("inputLoginPhone").value.trim();
+        const name = document.getElementById("inputLoginName").value.trim();
+        if (!phone) return;
+
+        const btnSubmit = document.getElementById("btnSubmitLogin");
+        btnSubmit.disabled = true;
+        btnSubmit.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Logging in...';
+
+        try {{
+          const res = await fetch(`${{API_BASE}}/auth/login`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ phone_number: phone, display_name: name || null }}),
+          }});
+          const data = await res.json();
+          if (data.success && data.user) {{
+            currentUser = data.user;
+            localStorage.setItem("crm_user", JSON.stringify(currentUser));
+            updateAuthUI();
+            closeLoginModal();
+            showToast(`Welcome, ${{currentUser.display_name}}! Logged in as ${{currentUser.role}}`);
+            await loadPendingApprovals();
+          }} else {{
+            showToast("Login failed: " + (data.error || "Unknown error"), true);
+          }}
+        }} catch (err) {{
+          showToast("Error logging in: " + err.message, true);
+        }} finally {{
+          btnSubmit.disabled = false;
+          btnSubmit.innerHTML = '<i class="fa-solid fa-arrow-right-to-bracket"></i> Login / Register';
+        }}
+      }});
+    }}
+
+    async function loadPendingApprovals() {{
+      try {{
+        const res = await fetch(`${{API_BASE}}/approvals/pending`);
+        const data = await res.json();
+        const approvals = (data && data.approvals) || [];
+
+        if (approvalsBadge) {{
+          if (approvals.length > 0) {{
+            approvalsBadge.textContent = approvals.length;
+            approvalsBadge.classList.remove("hidden");
+          }} else {{
+            approvalsBadge.classList.add("hidden");
+          }}
+        }}
+
+        if (approvalsFooterCount) {{
+          approvalsFooterCount.textContent = `${{approvals.length}} request${{approvals.length === 1 ? '' : 's'}} pending`;
+        }}
+
+        if (approvalsListContainer) {{
+          if (approvals.length === 0) {{
+            approvalsListContainer.innerHTML = `
+              <div class="text-center py-12 text-slate-500 text-xs">
+                <i class="fa-solid fa-clipboard-check text-2xl text-slate-600 mb-2 block"></i>
+                <div>No pending approvals right now. Everything is up to date!</div>
+              </div>
+            `;
+            return;
+          }}
+
+          approvalsListContainer.innerHTML = approvals.map(appr => {{
+            const isProject = appr.operation === 'create_project';
+            const opBadge = isProject
+              ? '<span class="text-[10px] px-2 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700 font-semibold"><i class="fa-solid fa-folder-plus"></i> Project Creation</span>'
+              : '<span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900/60 text-emerald-300 border border-emerald-700 font-semibold"><i class="fa-solid fa-table-columns"></i> Custom Field</span>';
+
+            let detailsHtml = '';
+            if (isProject) {{
+              detailsHtml = `
+                <div class="text-sm font-bold text-white">${{appr.project_name}}</div>
+                <div class="text-xs text-slate-400 mt-0.5">Code: <span class="text-slate-200 font-mono">${{appr.project_code || 'Auto-generated'}}</span></div>
+              `;
+            }} else {{
+              detailsHtml = `
+                <div class="text-sm font-bold text-white">Field: <span class="text-emerald-300 font-mono">${{appr.field_name}}</span></div>
+                <div class="text-xs text-slate-400 mt-0.5">Project: <span class="text-slate-200">${{appr.project_name}}</span> &bull; Target Sheet: <span class="text-slate-200 font-mono">${{appr.record_type || 'daily_work_done'}}</span></div>
+              `;
+            }}
+
+            return `
+              <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div class="space-y-1">
+                  <div class="flex items-center gap-2">
+                    ${{opBadge}}
+                    <span class="text-xs font-mono font-bold text-amber-400">${{appr.approval_code}}</span>
+                  </div>
+                  ${{detailsHtml}}
+                  <div class="text-[11px] text-slate-500">Requested: ${{appr.requested_at ? new Date(appr.requested_at).toLocaleString() : 'Recently'}}</div>
+                </div>
+
+                <div class="flex items-center gap-2 shrink-0">
+                  <button onclick="handleApprovalDecision('${{appr.id}}', 'REJECT')" class="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition">
+                    <i class="fa-solid fa-xmark"></i> Reject
+                  </button>
+                  <button onclick="handleApprovalDecision('${{appr.id}}', 'APPROVE')" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shadow-sm">
+                    <i class="fa-solid fa-check"></i> Approve
+                  </button>
+                </div>
+              </div>
+            `;
+          }}).join("");
+        }}
+      }} catch (err) {{
+        console.error("Failed to load approvals:", err);
+      }}
+    }}
+
+    window.handleApprovalDecision = async function(approvalId, decision) {{
+      if (!currentUser || !currentUser.sender_hash) {{
+        showToast("Please log in with WhatsApp to approve or reject requests", true);
+        modalLogin.classList.remove("hidden");
+        return;
+      }}
+
+      try {{
+        const res = await fetch(`${{API_BASE}}/approvals/${{approvalId}}/decision`, {{
+          method: "POST",
+          headers: {{
+            "Content-Type": "application/json",
+            "X-Sender-Hash": currentUser.sender_hash,
+          }},
+          body: JSON.stringify({{
+            decision: decision,
+            sender_hash: currentUser.sender_hash,
+          }}),
+        }});
+        const data = await res.json();
+        if (data.success) {{
+          showToast(data.message || `Approval ${{decision.toLowerCase()}}d!`);
+          await loadPendingApprovals();
+          await loadProjects();
+        }} else {{
+          showToast("Approval error: " + (data.error || "Unknown error"), true);
+        }}
+      }} catch (err) {{
+        showToast("Network error: " + err.message, true);
+      }}
+    }};
+
+    if (btnOpenApprovals) {{
+      btnOpenApprovals.addEventListener("click", () => {{
+        modalApprovals.classList.remove("hidden");
+        loadPendingApprovals();
+      }});
+    }}
+
+    if (btnCloseApprovals) {{
+      btnCloseApprovals.addEventListener("click", () => {{
+        modalApprovals.classList.add("hidden");
+      }});
+    }}
+
+    if (btnRefreshApprovals) {{
+      btnRefreshApprovals.addEventListener("click", () => {{
+        loadPendingApprovals();
       }});
     }}
 
@@ -1279,7 +1598,12 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     }}
 
     // Initialize on load
-    window.addEventListener("DOMContentLoaded", () => loadProjects());
+    window.addEventListener("DOMContentLoaded", () => {{
+      updateAuthUI();
+      loadProjects();
+      loadPendingApprovals();
+      setInterval(loadPendingApprovals, 20000);
+    }});
   </script>
 </body>
 </html>
