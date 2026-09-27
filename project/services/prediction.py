@@ -79,122 +79,98 @@ def calculate_project_prediction(
     if planned_end_date <= start_date:
         planned_end_date = start_date + timedelta(days=30)
 
-    # 3. Determine actual progress entries by date based on daily_work_done sheet
+    # 3. Determine actual progress entries by date strictly based on daily_work_done sheet
     daily_work_records = [
         r for r in records if r.get("record_type") in ("daily_work_done", "daily_log")
     ]
-    date_to_progress: Dict[date, float] = {}
-    max_record_date = start_date
-
+    
+    # Sort chronologically by record_date
+    sorted_records = []
     for r in daily_work_records:
         r_date = r.get("record_date")
         if not r_date:
             continue
         if isinstance(r_date, str):
-            r_date = datetime.fromisoformat(r_date[:10]).date()
-        if r_date > max_record_date:
-            max_record_date = r_date
+            try:
+                r_date = datetime.fromisoformat(r_date[:10]).date()
+            except ValueError:
+                continue
+        sorted_records.append((r_date, r))
 
+    sorted_records.sort(key=lambda x: x[0])
+
+    date_to_progress: Dict[date, float] = {}
+    has_explicit = False
+
+    for r_date, r in sorted_records:
         data = r.get("data") or {}
         explicit_pct = None
         for key in ("progress_pct", "progress_percentage", "progress", "percentage", "completion"):
             if key in data:
                 try:
                     explicit_pct = float(data[key])
+                    has_explicit = True
                     break
                 except (ValueError, TypeError):
                     pass
-
         if explicit_pct is not None:
             date_to_progress[r_date] = max(date_to_progress.get(r_date, 0.0), explicit_pct)
 
-    current_progress = 0.0
-    if date_to_progress:
-        sorted_dates = sorted(date_to_progress.keys())
-        current_progress = date_to_progress[sorted_dates[-1]]
-    else:
-        # If no explicit progress percentages were recorded, estimate progress from daily_work_done entries
-        daily_work_count = len(daily_work_records)
-        elapsed_days = max(1, (reference_date - start_date).days)
-        if daily_work_count > 0:
-            activity_weight = min(70.0, daily_work_count * 10.0)
-            time_weight = min(30.0, (elapsed_days / target_duration_days) * 30.0)
-            current_progress = round(min(100.0, activity_weight + time_weight), 1)
-        else:
-            current_progress = 0.0
+    if not has_explicit and sorted_records:
+        # Calculate milestone progress proportionally based on daily work entries
+        total_items = len(sorted_records)
+        date_counts: Dict[date, int] = {}
+        for r_date, _ in sorted_records:
+            date_counts[r_date] = date_counts.get(r_date, 0) + 1
 
-    actual_as_of_date = max(start_date, min(reference_date, max_record_date))
-    days_elapsed = max(1, (actual_as_of_date - start_date).days)
+        running = 0
+        for r_date in sorted(date_counts.keys()):
+            running += date_counts[r_date]
+            pct = round((running / total_items) * 100.0, 1)
+            date_to_progress[r_date] = pct
 
-    # 4. Velocity and Predicted Completion Date
-    # velocity = % work done per day
-    actual_velocity = current_progress / days_elapsed
-    expected_velocity = 100.0 / target_duration_days
-
-    if actual_velocity > 0:
-        remaining_pct = max(0.0, 100.0 - current_progress)
-        days_to_finish = math.ceil(remaining_pct / actual_velocity)
-        predicted_end_date = actual_as_of_date + timedelta(days=days_to_finish)
-    else:
-        # If no actual progress yet, prediction mirrors planned schedule
-        predicted_end_date = planned_end_date
-
-    # Max date to display on chart
-    final_chart_date = max(planned_end_date, predicted_end_date)
-    # Add a 5-day padding
-    final_chart_date = final_chart_date + timedelta(days=5)
-
-    # 5. Generate daily or sampled date timeline
-    total_chart_days = (final_chart_date - start_date).days
-    step_days = max(1, total_chart_days // 30)  # ~30 data points for smooth chart
-
+    # Timeline dates: project start date (0%) followed by each date recorded in daily_work_done
+    recorded_dates = sorted(date_to_progress.keys())
     timeline_dates: List[date] = []
-    curr = start_date
-    while curr <= final_chart_date:
-        timeline_dates.append(curr)
-        curr += timedelta(days=step_days)
-    if timeline_dates[-1] < final_chart_date:
-        timeline_dates.append(final_chart_date)
-
-    expected_curve: List[Optional[float]] = []
     actual_curve: List[Optional[float]] = []
-    predicted_curve: List[Optional[float]] = []
+
+    if recorded_dates:
+        if recorded_dates[0] > start_date:
+            timeline_dates.append(start_date)
+            actual_curve.append(0.0)
+
+        last_val = 0.0
+        for d in recorded_dates:
+            timeline_dates.append(d)
+            val = max(last_val, date_to_progress[d])
+            last_val = val
+            actual_curve.append(val)
+        current_progress = actual_curve[-1]
+    else:
+        timeline_dates = [start_date]
+        actual_curve = [0.0]
+        current_progress = 0.0
+
+    actual_as_of_date = timeline_dates[-1]
+    days_elapsed = max(1, (actual_as_of_date - start_date).days)
+    actual_velocity = round(current_progress / days_elapsed, 2)
+    expected_velocity = round(100.0 / target_duration_days, 2)
 
     total_planned_days = (planned_end_date - start_date).days or 1
-
-    for d in timeline_dates:
-        # Expected work (S-curve up to planned_end_date, then 100%)
-        if d <= start_date:
-            exp_val = 0.0
-        elif d >= planned_end_date:
-            exp_val = 100.0
-        else:
-            t_ratio = (d - start_date).days / total_planned_days
-            exp_val = _logistic_s_curve(t_ratio)
-        expected_curve.append(exp_val)
-
-        # Actual work (only plotted up to actual_as_of_date)
-        if d <= actual_as_of_date:
-            if d == start_date:
-                act_val = 0.0
-            elif d == actual_as_of_date:
-                act_val = current_progress
-            else:
-                # Interpolate actual between start (0) and current_progress
-                ratio = (d - start_date).days / days_elapsed
-                # Slight realistic non-linearity
-                act_val = round(current_progress * math.pow(ratio, 1.1), 1)
-            actual_curve.append(act_val)
-        else:
-            actual_curve.append(None)
-
-        # Predicted work line removed per user requirement (only actual work done kept)
-        predicted_curve.append(None)
-
-    # Calculate status and variance
     t_ratio_today = min(1.0, max(0.0, (actual_as_of_date - start_date).days / total_planned_days))
     expected_today = _logistic_s_curve(t_ratio_today)
     variance_pct = round(current_progress - expected_today, 1)
+
+    if actual_velocity > 0 and current_progress < 100.0:
+        days_remaining = int(math.ceil((100.0 - current_progress) / actual_velocity))
+        predicted_end_date = actual_as_of_date + timedelta(days=days_remaining)
+    elif current_progress >= 100.0:
+        predicted_end_date = actual_as_of_date
+    else:
+        predicted_end_date = planned_end_date
+
+    expected_curve: List[Optional[float]] = [None] * len(timeline_dates)
+    predicted_curve: List[Optional[float]] = [None] * len(timeline_dates)
 
     if variance_pct >= 5.0:
         status_text = "Ahead of Schedule"

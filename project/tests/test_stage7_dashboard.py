@@ -24,6 +24,7 @@ from services.excel_service import (
     sync_excel_row_to_supabase,
     create_new_project,
     import_project_excel,
+    delete_project,
 )
 
 
@@ -269,6 +270,9 @@ class TestStage7Dashboard(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/html", resp.headers["content-type"])
         self.assertIn("Construction CRM", resp.text)
+        self.assertNotIn("Stage 7", resp.text)
+        self.assertIn("btnDeleteProject", resp.text)
+        self.assertIn("modalDeleteProject", resp.text)
         self.assertIn("Actual Work Done vs. Date", resp.text)
         self.assertIn("Material Procurement", resp.text)
         self.assertIn("Manpower + Equipment", resp.text)
@@ -452,6 +456,40 @@ class TestStage7Dashboard(unittest.TestCase):
         data = resp.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["reconciliation"]["inserted"], 2)
+
+    @patch("services.excel_service.get_db_connection")
+    def test_delete_project_service(self, mock_get_conn):
+        mock_cur = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+
+        mock_cur.fetchone.side_effect = [
+            {"id": self.sample_project_id, "project_name": "Metro Line Extension", "project_code": "MLE-01"},
+            {"id": self.sample_project_id},
+        ]
+
+        res = delete_project(self.sample_project_id)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["project_id"], self.sample_project_id)
+        self.assertIn("Metro Line Extension", res["message"])
+
+    @patch("services.excel_service.delete_project")
+    def test_api_delete_project_route(self, mock_del):
+        mock_del.return_value = {
+            "success": True,
+            "project_id": self.sample_project_id,
+            "message": "Project deleted successfully.",
+        }
+        resp = self.client.delete(f"/api/projects/{self.sample_project_id}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+
+        # Also test /api/index alias route
+        resp_alias = self.client.delete(f"/api/index/projects/{self.sample_project_id}")
+        self.assertEqual(resp_alias.status_code, 200)
 
     @patch("services.excel_service.execute_query")
     @patch("services.excel_service.get_db_connection")

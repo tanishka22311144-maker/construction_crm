@@ -417,6 +417,24 @@ async def create_project_route(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.delete("/api/projects/{project_id}")
+@app.delete("/api/index/projects/{project_id}")
+@app.post("/api/projects/{project_id}/delete")
+@app.post("/api/index/projects/{project_id}/delete")
+async def delete_project_route(project_id: str):
+    """Delete a project and cascade-remove its records, field definitions, and access."""
+    try:
+        from services.excel_service import delete_project
+        result = delete_project(project_id)
+        if not result.get("success"):
+            return JSONResponse(result, status_code=400)
+        return JSONResponse(result, status_code=200)
+    except ValueError as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
 @app.post("/api/projects/{project_id}/import_excel")
 @app.post("/api/index/projects/{project_id}/import_excel")
 async def import_excel_route(project_id: str, request: Request):

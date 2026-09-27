@@ -838,3 +838,36 @@ def import_project_excel(
         "message": f"Workbook imported successfully for {proj_info.get('project_name')}: {created_records} added, {updated_records} updated, {deleted_records} deleted, {len(new_fields_created)} custom fields registered.",
     }
 
+
+def delete_project(project_id: str) -> Dict[str, Any]:
+    """Permanently delete a project and cascade-remove its records, field definitions, and access."""
+    if not project_id:
+        raise ValueError("project_id is required")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, project_name, project_code FROM public.projects WHERE id = %s", (project_id,))
+            proj = cur.fetchone()
+            if not proj:
+                return {"success": False, "error": f"Project {project_id} not found"}
+
+            # Clean up pending approvals referencing this project if any
+            try:
+                cur.execute("DELETE FROM public.pending_approvals WHERE project_id = %s", (project_id,))
+            except Exception:
+                pass
+
+            # Delete project row (cascades to project_records, project_field_definitions, user_project_access)
+            cur.execute("DELETE FROM public.projects WHERE id = %s RETURNING id", (project_id,))
+            deleted = cur.fetchone()
+            if not deleted:
+                return {"success": False, "error": "Failed to delete project"}
+
+    return {
+        "success": True,
+        "project_id": str(project_id),
+        "deleted_project": dict(proj),
+        "message": f"Project '{proj['project_name']}' [{proj['project_code']}] deleted successfully.",
+    }
+
+

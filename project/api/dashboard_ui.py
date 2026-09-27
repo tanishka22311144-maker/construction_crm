@@ -53,7 +53,6 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
       <div>
         <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
           Construction CRM
-          <span class="text-xs font-semibold px-2 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700">Stage 7</span>
         </h1>
         <p class="text-xs text-slate-400">Project Prediction & Real-Time Dedicated Excel Engine</p>
       </div>
@@ -75,6 +74,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
 
       <button id="btnNewProject" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-sm">
         <i class="fa-solid fa-plus"></i> New Project
+      </button>
+
+      <button id="btnDeleteProject" class="bg-red-900/40 hover:bg-red-600 text-red-300 hover:text-white border border-red-700/60 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-sm" title="Delete current project">
+        <i class="fa-solid fa-trash-can"></i> Delete Project
       </button>
     </div>
   </header>
@@ -250,6 +253,39 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
     </div>
   </div>
 
+  <!-- Modal: Delete Project Confirmation -->
+  <div id="modalDeleteProject" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-triangle-exclamation text-rose-500"></i> Delete Project
+        </h3>
+        <button id="btnCloseDeleteProject" class="text-slate-400 hover:text-white transition">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3">
+        <p class="text-xs text-slate-300">
+          Are you sure you want to permanently delete project <strong id="deleteProjectTargetName" class="text-white font-semibold"></strong>?
+        </p>
+        <div class="bg-rose-950/40 border border-rose-900/60 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2.5">
+          <i class="fa-solid fa-circle-exclamation text-rose-400 mt-0.5"></i>
+          <span>
+            This action will permanently delete all records, standard sheets, custom fields, and logs associated with this project. This cannot be undone.
+          </span>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+        <button type="button" id="btnCancelDeleteProject" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition">Cancel</button>
+        <button type="button" id="btnConfirmDeleteProject" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition">
+          <i class="fa-solid fa-trash-can"></i> Permanently Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Import Excel Workbook -->
   <div id="modalImportExcel" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
@@ -368,6 +404,10 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         
         if (!data.projects || data.projects.length === 0) {{
           selector.innerHTML = '<option value="">No projects found</option>';
+          currentProjectId = "";
+          document.getElementById("excelTableHead").innerHTML = "";
+          document.getElementById("excelTableBody").innerHTML = '<tr><td class="p-8 text-center text-slate-500">No project available</td></tr>';
+          if (chartInstance) {{ chartInstance.destroy(); chartInstance = null; }}
           return;
         }}
 
@@ -1067,6 +1107,60 @@ def get_dashboard_html(supabase_url: str = "", supabase_anon_key: str = "") -> s
         }} finally {{
           btnSubmitNewProject.disabled = false;
           btnSubmitNewProject.innerHTML = '<i class="fa-solid fa-plus"></i> Create Project';
+        }}
+      }});
+    }}
+
+    // 12b. Delete Project Modal Logic
+    const btnDeleteProject = document.getElementById("btnDeleteProject");
+    const modalDeleteProject = document.getElementById("modalDeleteProject");
+    const btnCloseDeleteProject = document.getElementById("btnCloseDeleteProject");
+    const btnCancelDeleteProject = document.getElementById("btnCancelDeleteProject");
+    const btnConfirmDeleteProject = document.getElementById("btnConfirmDeleteProject");
+
+    if (btnDeleteProject) {{
+      btnDeleteProject.addEventListener("click", () => {{
+        if (!currentProjectId) {{
+          showToast("No active project selected to delete.", true);
+          return;
+        }}
+        const opt = document.getElementById("projectSelector").selectedOptions[0];
+        const projName = opt ? opt.textContent : "Selected Project";
+        document.getElementById("deleteProjectTargetName").textContent = `"${{projName}}"`;
+        modalDeleteProject.classList.remove("hidden");
+      }});
+    }}
+
+    const closeDeleteModal = () => {{
+      modalDeleteProject.classList.add("hidden");
+    }};
+    if (btnCloseDeleteProject) btnCloseDeleteProject.addEventListener("click", closeDeleteModal);
+    if (btnCancelDeleteProject) btnCancelDeleteProject.addEventListener("click", closeDeleteModal);
+
+    if (btnConfirmDeleteProject) {{
+      btnConfirmDeleteProject.addEventListener("click", async () => {{
+        if (!currentProjectId) return;
+        btnConfirmDeleteProject.disabled = true;
+        btnConfirmDeleteProject.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting...';
+
+        try {{
+          const res = await fetch(`${{API_BASE}}/projects/${{currentProjectId}}`, {{
+            method: "DELETE",
+          }});
+          const data = await res.json();
+          if (data.success) {{
+            showToast("Project deleted successfully");
+            closeDeleteModal();
+            currentProjectId = "";
+            await loadProjects();
+          }} else {{
+            showToast("Failed to delete project: " + (data.error || "Unknown error"), true);
+          }}
+        }} catch (err) {{
+          showToast("Error deleting project: " + err.message, true);
+        }} finally {{
+          btnConfirmDeleteProject.disabled = false;
+          btnConfirmDeleteProject.innerHTML = '<i class="fa-solid fa-trash-can"></i> Permanently Delete';
         }}
       }});
     }}
